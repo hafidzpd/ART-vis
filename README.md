@@ -1,4 +1,7 @@
-# React + Vite
+# ART-vis
+Aplikasi visualisasi dan perhitungan Autonomous Rail Rapid Transit (ART)
+
+## React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
