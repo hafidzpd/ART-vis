@@ -54,7 +54,7 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
       // --- Base variables ---
       const cw = canvas.width;
       const ch = canvas.height;
-      const { carriages, length, width, wheelbase, targetRadius, layoutType, roadWidth, showCars } = config;
+      const { carriages, length, width, wheelbase, targetRadius, layoutType, showCars, showSecondTrain } = config;
 
       // --- Pixel conversions ---
       const R = targetRadius * SCALE;
@@ -62,9 +62,10 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
       const L = length * SCALE;
       const WB = wheelbase * SCALE;
       
-      const laneWidthPx = 3.5 * SCALE;
+      const laneWidthPx = (config.laneWidth || 3.5) * SCALE;
       const { lanesPerDirection } = config;
-      const halfRW = lanesPerDirection * laneWidthPx;
+      const intersectionMarginPx = (config.intersectionMargin || 0) * SCALE;
+      const halfRW = (lanesPerDirection * laneWidthPx) + intersectionMarginPx;
       const RW = halfRW * 2;
       
       // Train is in the innermost lane (LHT: rightmost lane of the left side)
@@ -81,20 +82,20 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
       const rLeft = intX - halfRW;
       const rRight = intX + halfRW;
 
-      // Vehicle path: Eastbound (top half) turning Southbound (right half) - LHT Right Turn
-      // Eastbound inner lane: y = intY - laneOff
+      // Vehicle path 1: Eastbound (top half) turning Southbound (right half) - LHT Right Turn
       const cy = intY - laneOff;
-      // Southbound inner lane: x = intX + laneOff
       const vx = intX + laneOff;
-      
-      // Arc center for Right Turn (Clockwise from East to South)
-      // Tangent to y=cy at start, tangent to x=vx at end.
       const acy = cy + R;
       const acx = vx - R;
-      
-      const cx = acx; // Transition point x
+      const cx = acx;
 
-      // Concentric radii from arc center (for drawing sweeps, not used for physical curb collision here since medians are sharp)
+      // Vehicle path 2: Northbound (from South) turning Westbound - LHT Left Turn
+      const vx2 = intX - laneOff;
+      const cy2 = intY + laneOff;
+      const acy2 = cy2 + R;
+      const acx2 = vx2 - R;
+
+      // Concentric radii from arc center
       const rInnerSweep = R - W / 2;
       const rOuterSweep = Math.sqrt(Math.pow(R + W / 2, 2) + Math.pow(WB + (L - WB) / 2, 2));
 
@@ -120,24 +121,38 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
       //   DRAW ENVIRONMENT
       // ==========================================
 
-      if (layoutType === 'intersection') {
-        drawIntersection(ctx, cw, ch, intX, intY, rTop, rBot, rLeft, rRight, RW, halfRW, acx, acy, laneWidthPx, lanesPerDirection, rInnerSweep, rOuterSweep, SCALE);
-        if (showCars) {
-            drawCarsForScale(ctx, intX, intY, laneWidthPx, lanesPerDirection, SCALE);
-        }
-      } else {
-        // Curve not fully updated for multi-lane yet, fallback to intersection draw
-        drawIntersection(ctx, cw, ch, intX, intY, rTop, rBot, rLeft, rRight, RW, halfRW, acx, acy, laneWidthPx, lanesPerDirection, rInnerSweep, rOuterSweep, SCALE);
-        if (showCars) {
-            drawCarsForScale(ctx, intX, intY, laneWidthPx, lanesPerDirection, SCALE);
-        }
+      drawIntersection(ctx, cw, ch, intX, intY, rTop, rBot, rLeft, rRight, RW, halfRW, acx, acy, laneWidthPx, lanesPerDirection, rInnerSweep, rOuterSweep, SCALE);
+      
+      if (showSecondTrain) {
+         // Draw sweep paths for second train
+         if (rInnerSweep > 0) {
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(59,130,246,0.4)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 4]);
+            ctx.arc(acx2, acy2, rInnerSweep, 0, -Math.PI / 2, true);
+            ctx.stroke();
+            ctx.setLineDash([]);
+         }
+         if (rOuterSweep > 0) {
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(239,68,68,0.4)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 4]);
+            ctx.arc(acx2, acy2, rOuterSweep, 0, -Math.PI / 2, true);
+            ctx.stroke();
+            ctx.setLineDash([]);
+         }
+      }
+
+      if (showCars) {
+          drawCarsForScale(ctx, intX, intY, laneWidthPx, lanesPerDirection, SCALE);
       }
 
       // ==========================================
       //   ANIMATION / VEHICLE
       // ==========================================
 
-      // Update distance (constant animation speed since config speed is removed)
       if (isPlaying) {
         const pxPerFrame = (30 * (1000 / 3600) * SCALE) / 60;
         stateRef.current.distance += pxPerFrame;
@@ -145,23 +160,19 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
 
       const d = stateRef.current.distance;
 
-      // Path state function (Eastbound to Southbound Right Turn)
+      // Path state function 1 (Eastbound to Southbound Right Turn)
       const getPathState = (dist) => {
         if (dist < cx) {
-          // Approaching from West (left)
           return { x: dist, y: cy, angle: 0 };
         }
         const arcDist = dist - cx;
         const arcLen = (Math.PI / 2) * R;
         if (arcDist < arcLen) {
           const theta = arcDist / R;
-          // Clockwise turn from top (PI*1.5) to right (PI*2) relative to arc center?
-          // Actually, arc center is DOWN and LEFT from turn path.
-          // Center: (acx, acy). Start point: (acx, acy - R). End point: (acx + R, acy).
           return {
             x: acx + R * Math.sin(theta),
             y: acy - R * Math.cos(theta),
-            angle: theta // 0 to PI/2
+            angle: theta
           };
         } else {
           const straightDist = arcDist - arcLen;
@@ -173,26 +184,51 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
         }
       };
 
+      // Path state function 2 (South to West Left Turn)
+      const getSecondaryPathState = (dist) => {
+        const startY = ch + L; 
+        const cx2 = startY - acy2;
+        if (dist < cx2) {
+          return { x: vx2, y: startY - dist, angle: -Math.PI / 2 };
+        }
+        const arcDist = dist - cx2;
+        const arcLen = (Math.PI / 2) * R;
+        if (arcDist < arcLen) {
+          const theta = -(arcDist / R);
+          return {
+            x: acx2 + R * Math.cos(theta),
+            y: acy2 + R * Math.sin(theta),
+            angle: theta - Math.PI / 2
+          };
+        } else {
+          const straightDist = arcDist - arcLen;
+          return {
+            x: acx2 - straightDist,
+            y: cy2,
+            angle: Math.PI
+          };
+        }
+      };
+
       // Calculate carriage positions
       const carriageStates = [];
+      const carriageStates2 = [];
       let headDist = d;
       for (let i = 0; i < carriages; i++) {
         carriageStates.push(getPathState(headDist - L / 2));
-        headDist -= L + 1 * SCALE; // 1m gap
+        if (showSecondTrain) carriageStates2.push(getSecondaryPathState(headDist - L / 2));
+        headDist -= L + 1 * SCALE;
       }
 
-      // Record traces from lead carriage
+      // Record traces from lead carriage (only for primary train to avoid clutter)
       const lead = carriageStates[0];
       if (lead.x > -L && lead.x < cw + L && lead.y > -L && lead.y < ch + L && isPlaying) {
         const cos_a = Math.cos(lead.angle);
         const sin_a = Math.sin(lead.angle);
-        // Front outer corner
         const fOx = lead.x + (L/2) * cos_a - (W/2) * sin_a;
         const fOy = lead.y + (L/2) * sin_a + (W/2) * cos_a;
-        // Rear inner corner
         const rIx = lead.x - (L/2) * cos_a + (W/2) * sin_a;
         const rIy = lead.y - (L/2) * sin_a - (W/2) * cos_a;
-
         stateRef.current.traces.red.push({ x: fOx, y: fOy });
         stateRef.current.traces.blue.push({ x: rIx, y: rIy });
         stateRef.current.traces.green.push({ x: lead.x, y: lead.y });
@@ -214,53 +250,52 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
       drawTrace(stateRef.current.traces.blue, '#3b82f6');
       drawTrace(stateRef.current.traces.green, '#22c55e', true);
 
-      // Draw carriages
-      carriageStates.forEach((st, i) => {
-        ctx.save();
-        ctx.translate(st.x, st.y);
-        ctx.rotate(st.angle);
+      // Helper to draw trains
+      const drawTrain = (states, isPrimary) => {
+        states.forEach((st, i) => {
+          ctx.save();
+          ctx.translate(st.x, st.y);
+          ctx.rotate(st.angle);
 
-        // Body
-        const bodyColor = isCrash ? 'rgba(239, 68, 68, 0.85)' : (i === 0 ? 'rgba(59, 130, 246, 0.9)' : 'rgba(148, 163, 184, 0.9)');
-        ctx.fillStyle = bodyColor;
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.roundRect(-L / 2, -W / 2, L, W, 4);
-        ctx.fill();
-        ctx.stroke();
-
-        // Wheels
-        ctx.fillStyle = '#111';
-        const ww = 4, wh = 6;
-        ctx.fillRect(WB/2 - ww/2, -W/2 - 2, ww, wh);
-        ctx.fillRect(WB/2 - ww/2, W/2 - wh + 2, ww, wh);
-        ctx.fillRect(-WB/2 - ww/2, -W/2 - 2, ww, wh);
-        ctx.fillRect(-WB/2 - ww/2, W/2 - wh + 2, ww, wh);
-
-        ctx.restore();
-
-        // Joint connector
-        if (i > 0) {
-          const prev = carriageStates[i - 1];
-          const rPx = prev.x - (L/2) * Math.cos(prev.angle);
-          const rPy = prev.y - (L/2) * Math.sin(prev.angle);
-          const fCx = st.x + (L/2) * Math.cos(st.angle);
-          const fCy = st.y + (L/2) * Math.sin(st.angle);
-
+          const bodyColor = isPrimary && isCrash ? 'rgba(239, 68, 68, 0.85)' : (i === 0 ? 'rgba(59, 130, 246, 0.9)' : 'rgba(148, 163, 184, 0.9)');
+          ctx.fillStyle = bodyColor;
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 1.5;
           ctx.beginPath();
-          ctx.strokeStyle = '#94a3b8';
-          ctx.lineWidth = 3;
-          ctx.moveTo(rPx, rPy);
-          ctx.lineTo(fCx, fCy);
+          ctx.roundRect(-L / 2, -W / 2, L, W, 4);
+          ctx.fill();
           ctx.stroke();
 
-          ctx.beginPath();
-          ctx.fillStyle = '#ef4444';
-          ctx.arc((rPx + fCx) / 2, (rPy + fCy) / 2, 3, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      });
+          ctx.fillStyle = '#111';
+          const ww = 4, wh = 6;
+          ctx.fillRect(WB/2 - ww/2, -W/2 - 2, ww, wh);
+          ctx.fillRect(WB/2 - ww/2, W/2 - wh + 2, ww, wh);
+          ctx.fillRect(-WB/2 - ww/2, -W/2 - 2, ww, wh);
+          ctx.fillRect(-WB/2 - ww/2, W/2 - wh + 2, ww, wh);
+          ctx.restore();
+
+          if (i > 0) {
+            const prev = states[i - 1];
+            const rPx = prev.x - (L/2) * Math.cos(prev.angle);
+            const rPy = prev.y - (L/2) * Math.sin(prev.angle);
+            const fCx = st.x + (L/2) * Math.cos(st.angle);
+            const fCy = st.y + (L/2) * Math.sin(st.angle);
+            ctx.beginPath();
+            ctx.strokeStyle = '#94a3b8';
+            ctx.lineWidth = 3;
+            ctx.moveTo(rPx, rPy);
+            ctx.lineTo(fCx, fCy);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.fillStyle = '#ef4444';
+            ctx.arc((rPx + fCx) / 2, (rPy + fCy) / 2, 3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        });
+      };
+
+      drawTrain(carriageStates, true);
+      if (showSecondTrain) drawTrain(carriageStates2, false);
 
       // Loop animation
       const last = carriageStates[carriageStates.length - 1];

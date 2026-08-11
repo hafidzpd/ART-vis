@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { MessageSquare } from 'lucide-react';
 
-const Sidebar = ({ config, setConfig }) => {
+const Sidebar = ({ config, setConfig, onAutoRecommend }) => {
   const [chatInput, setChatInput] = useState('');
 
   const handleChange = (e) => {
@@ -155,6 +155,30 @@ const Sidebar = ({ config, setConfig }) => {
 
         <div className="input-field">
           <label>
+            <span>Lebar per Lajur (m)</span>
+            <span className="value">{config.laneWidth}</span>
+          </label>
+          <input 
+            type="range" name="laneWidth" 
+            min="2.5" max="6.0" step="0.1" 
+            value={config.laneWidth} onChange={handleChange} 
+          />
+        </div>
+
+        <div className="input-field">
+          <label>
+            <span>Luas Ekstra Perempatan (m)</span>
+            <span className="value">{config.intersectionMargin}</span>
+          </label>
+          <input 
+            type="range" name="intersectionMargin" 
+            min="0" max="50" step="1" 
+            value={config.intersectionMargin} onChange={handleChange} 
+          />
+        </div>
+
+        <div className="input-field">
+          <label>
             <span>Target Radius Jalan (m)</span>
             <span className="value">{config.targetRadius}</span>
           </label>
@@ -163,6 +187,15 @@ const Sidebar = ({ config, setConfig }) => {
             min="10" max="100" step="1" 
             value={config.targetRadius} onChange={handleChange} 
           />
+          <button 
+            type="button" 
+            onClick={onAutoRecommend}
+            style={{ marginTop: '8px', padding: '8px', background: 'var(--accent-primary)', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: '600', transition: 'background 0.2s' }}
+            onMouseOver={(e) => e.target.style.background = 'var(--accent-hover)'}
+            onMouseOut={(e) => e.target.style.background = 'var(--accent-primary)'}
+          >
+            ✨ Auto Rekomendasi Radius
+          </button>
         </div>
 
         <div className="input-field">
@@ -186,6 +219,15 @@ const Sidebar = ({ config, setConfig }) => {
               style={{ width: '16px', height: '16px' }}
             />
             Tampilkan Mobil (Skala)
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginTop: '10px' }}>
+            <input 
+              type="checkbox" 
+              checked={config.showSecondTrain} 
+              onChange={(e) => setConfig({ ...config, showSecondTrain: e.target.checked })}
+              style={{ width: '16px', height: '16px' }}
+            />
+            Simulasi 2 Kereta (Berlawanan)
           </label>
         </div>
       </div>

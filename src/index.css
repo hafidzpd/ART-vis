@@ -157,11 +157,13 @@ input[type=range]::-webkit-slider-runnable-track {
   position: absolute;
   top: 24px;
   right: 24px;
-  left: 344px; /* sidebar width + margin */
+  width: 600px;
+  max-width: calc(100vw - 368px);
   display: flex;
   flex-direction: column;
   gap: 12px;
   z-index: 10;
+  padding: 16px;
 }
 
 .hud-metrics {

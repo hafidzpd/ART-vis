@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import Sidebar from './components/Sidebar';
 import DashboardHUD from './components/DashboardHUD';
 import ArtCanvas from './components/ArtCanvas';
-import { calculatePhysicalRadius, calculateSweepRadii, calculateSweptPath } from './utils/simulationMath';
+import { calculatePhysicalRadius, calculateSweepRadii, calculateSweptPath, checkIntersectionCollision, findOptimalRadius } from './utils/simulationMath';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 
 function App() {
@@ -17,6 +17,9 @@ function App() {
     clearance: 0.5,
     lanesPerDirection: 3,
     showCars: true,
+    laneWidth: 3.5,
+    intersectionMargin: 0,
+    showSecondTrain: false,
   });
 
   const [isPlaying, setIsPlaying] = useState(true);
@@ -29,37 +32,51 @@ function App() {
   // Sweep radii for crash detection
   const { rInner, rOuter } = useMemo(() => calculateSweepRadii(config.targetRadius, config.width, config.wheelbase, config.length), [config.targetRadius, config.width, config.wheelbase, config.length]);
   
-  const laneWidth = 3.5; // Standard Indonesian lane width
+  const laneWidth = config.laneWidth || 3.5; // Customizable lane width
   const totalRoadWidth = config.lanesPerDirection * laneWidth * 2;
   
   // The train runs in the innermost lane. The distance from the center divider (median) to the center of the innermost lane is laneWidth / 2.
   const laneOffset = laneWidth / 2; 
   
   // Road boundary radii (relative to the arc center of the turn)
-  const medianRadius = config.targetRadius - laneOffset;   // Center divider (median)
-  const trainLaneOuterRadius = config.targetRadius + laneOffset; // Line separating ART lane from mixed traffic
-  const roadOuterEdgeRadius = medianRadius + (config.lanesPerDirection * laneWidth); // Outer curb (trotoar)
+  const medianRadius = config.targetRadius - laneOffset;   
+  const trainLaneOuterRadius = config.targetRadius + laneOffset; 
+  const roadOuterEdgeRadius = medianRadius + (config.lanesPerDirection * laneWidth);
   
-  // Crash detection
-  const isRadiusCrash = config.targetRadius < physicalRadius;
-  const isInnerCrash = rInner < medianRadius;   // body hits or crosses the median into oncoming traffic
-  const isLaneCross = rOuter > trainLaneOuterRadius;    // body crosses into the mixed traffic lane
-  const isOuterCrash = rOuter > roadOuterEdgeRadius;    // body exits road entirely (rare if lanes >= 2)
-  const isCrash = isRadiusCrash || isInnerCrash || isLaneCross || isOuterCrash;
+  // Comprehensive Intersection Crash detection
+  const collisionResult = useMemo(() => checkIntersectionCollision(config, laneWidth), [config, laneWidth]);
+  const isCrash = collisionResult.isCrash;
+  const crashReasonsList = collisionResult.crashReasons;
+
+  const handleAutoRecommend = () => {
+    let optimal = findOptimalRadius(config, laneWidth);
+    if (optimal) {
+      setConfig(prev => ({ ...prev, targetRadius: optimal }));
+    } else {
+      let found = false;
+      for (let margin = 1; margin <= 30; margin++) {
+        const testConfig = { ...config, intersectionMargin: (config.intersectionMargin || 0) + margin };
+        optimal = findOptimalRadius(testConfig, laneWidth);
+        if (optimal) {
+          setConfig(prev => ({ ...prev, targetRadius: optimal, intersectionMargin: testConfig.intersectionMargin }));
+          found = true;
+          break;
+        }
+      }
+      if (!found) alert("Kendaraan terlalu besar untuk jalan ini. Coba kurangi gerbong atau tambah lajur.");
+    }
+  };
 
   return (
     <div className="app-container">
-      <Sidebar config={config} setConfig={setConfig} />
+      <Sidebar config={config} setConfig={setConfig} onAutoRecommend={handleAutoRecommend} />
       
       <DashboardHUD 
         physicalRadius={physicalRadius}
         sweptPath={sweptPath}
         targetRadius={config.targetRadius}
         isCrash={isCrash}
-        isRadiusCrash={isRadiusCrash}
-        isInnerCrash={isInnerCrash}
-        isOuterCrash={isOuterCrash}
-        isLaneCross={isLaneCross}
+        crashReasonsList={crashReasonsList}
         config={config}
         laneWidth={laneWidth}
         rInner={rInner}
