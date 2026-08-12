@@ -3,7 +3,7 @@ import Sidebar from './components/Sidebar';
 import DashboardHUD from './components/DashboardHUD';
 import ArtCanvas from './components/ArtCanvas';
 import { calculatePhysicalRadius, calculateSweepRadii, calculateSweptPath, checkIntersectionCollision, findOptimalRadius } from './utils/simulationMath';
-import { Play, Pause, RotateCcw } from 'lucide-react';
+import { Play, Pause, RotateCcw, Ruler } from 'lucide-react';
 
 function App() {
   const [config, setConfig] = useState({
@@ -15,66 +15,55 @@ function App() {
     maxSteeringAngle: 35,
     targetRadius: 25,
     clearance: 0.5,
-    lanesPerDirection: 3,
-    showCars: true,
-    laneWidth: 3.5,
+    roadWidthPerDirection: 10.5,
+    trainLaneWidth: 3.5,
     intersectionMargin: 0,
     showSecondTrain: false,
+    showDimensions: false,
   });
 
   const [isPlaying, setIsPlaying] = useState(true);
   const [resetTrigger, setResetTrigger] = useState(0);
+  const [isRulerMode, setIsRulerMode] = useState(false);
 
   // Derived calculations
   const physicalRadius = useMemo(() => calculatePhysicalRadius(config.wheelbase, config.maxSteeringAngle), [config.wheelbase, config.maxSteeringAngle]);
-  const sweptPath = useMemo(() => calculateSweptPath(config.targetRadius, config.width, config.wheelbase, config.length, config.clearance), [config.targetRadius, config.width, config.wheelbase, config.length, config.clearance]);
+  
+  const laneWidth = config.trainLaneWidth || 3.5;
+  const totalRoadWidth = config.roadWidthPerDirection * 2;
+  const laneOffset = laneWidth / 2; 
+
+  const optimalRadius = useMemo(() => {
+    let opt = findOptimalRadius(config, laneWidth);
+    return opt || Math.ceil(physicalRadius);
+  }, [config, laneWidth, physicalRadius]);
+
+  const activeConfig = { ...config, targetRadius: optimalRadius };
+
+  const sweptPath = useMemo(() => calculateSweptPath(optimalRadius, config.width, config.wheelbase, config.length, config.clearance), [optimalRadius, config.width, config.wheelbase, config.length, config.clearance]);
   
   // Sweep radii for crash detection
-  const { rInner, rOuter } = useMemo(() => calculateSweepRadii(config.targetRadius, config.width, config.wheelbase, config.length), [config.targetRadius, config.width, config.wheelbase, config.length]);
-  
-  const laneWidth = config.laneWidth || 3.5; // Customizable lane width
-  const totalRoadWidth = config.lanesPerDirection * laneWidth * 2;
-  
-  // The train runs in the innermost lane. The distance from the center divider (median) to the center of the innermost lane is laneWidth / 2.
-  const laneOffset = laneWidth / 2; 
+  const { rInner, rOuter } = useMemo(() => calculateSweepRadii(optimalRadius, config.width, config.wheelbase, config.length), [optimalRadius, config.width, config.wheelbase, config.length]);
   
   // Road boundary radii (relative to the arc center of the turn)
-  const medianRadius = config.targetRadius - laneOffset;   
-  const trainLaneOuterRadius = config.targetRadius + laneOffset; 
-  const roadOuterEdgeRadius = medianRadius + (config.lanesPerDirection * laneWidth);
+  const medianRadius = optimalRadius - laneOffset;   
+  const trainLaneOuterRadius = optimalRadius + laneOffset; 
+  const roadOuterEdgeRadius = medianRadius + config.roadWidthPerDirection;
   
   // Comprehensive Intersection Crash detection
-  const collisionResult = useMemo(() => checkIntersectionCollision(config, laneWidth), [config, laneWidth]);
+  const collisionResult = useMemo(() => checkIntersectionCollision(activeConfig, laneWidth), [activeConfig, laneWidth]);
   const isCrash = collisionResult.isCrash;
   const crashReasonsList = collisionResult.crashReasons;
-
-  const handleAutoRecommend = () => {
-    let optimal = findOptimalRadius(config, laneWidth);
-    if (optimal) {
-      setConfig(prev => ({ ...prev, targetRadius: optimal }));
-    } else {
-      let found = false;
-      for (let margin = 1; margin <= 30; margin++) {
-        const testConfig = { ...config, intersectionMargin: (config.intersectionMargin || 0) + margin };
-        optimal = findOptimalRadius(testConfig, laneWidth);
-        if (optimal) {
-          setConfig(prev => ({ ...prev, targetRadius: optimal, intersectionMargin: testConfig.intersectionMargin }));
-          found = true;
-          break;
-        }
-      }
-      if (!found) alert("Kendaraan terlalu besar untuk jalan ini. Coba kurangi gerbong atau tambah lajur.");
-    }
-  };
+  const overshotX = collisionResult.overshotX || 0;
 
   return (
     <div className="app-container">
-      <Sidebar config={config} setConfig={setConfig} onAutoRecommend={handleAutoRecommend} />
+      <Sidebar config={config} setConfig={setConfig} />
       
       <DashboardHUD 
         physicalRadius={physicalRadius}
         sweptPath={sweptPath}
-        targetRadius={config.targetRadius}
+        targetRadius={optimalRadius}
         isCrash={isCrash}
         crashReasonsList={crashReasonsList}
         config={config}
@@ -87,10 +76,19 @@ function App() {
       />
 
       <div className="canvas-container">
-        <ArtCanvas config={config} isPlaying={isPlaying} resetTrigger={resetTrigger} isCrash={isCrash} />
+        <ArtCanvas config={activeConfig} isPlaying={isPlaying} resetTrigger={resetTrigger} isCrash={isCrash} isRulerMode={isRulerMode} overshotX={overshotX} />
         
         <div className="playback-controls">
-          <button className="btn-icon" onClick={() => setIsPlaying(!isPlaying)}>
+          <button 
+            className={`btn-icon ${isRulerMode ? 'active' : ''}`} 
+            onClick={() => setIsRulerMode(!isRulerMode)}
+            title="Mode Penggaris (Ukur Jarak)"
+            style={isRulerMode ? { background: '#facc15', color: '#000' } : {}}
+          >
+            <Ruler size={24} />
+          </button>
+          <div style={{ width: '1px', height: '24px', background: 'rgba(255,255,255,0.2)', margin: '0 8px' }}></div>
+          <button className="btn-icon" onClick={() => setIsPlaying(!isPlaying)} title={isPlaying ? "Pause" : "Play"}>
             {isPlaying ? <Pause size={24} /> : <Play size={24} />}
           </button>
           <button className="btn-icon" onClick={() => {

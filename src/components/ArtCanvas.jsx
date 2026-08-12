@@ -1,10 +1,19 @@
 import React, { useRef, useEffect } from 'react';
 
-const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
+const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash, isRulerMode, overshotX }) => {
   const canvasRef = useRef(null);
   const stateRef = useRef({ distance: 0, traces: { red: [], blue: [], green: [] } });
   const cameraRef = useRef({ x: 0, y: 0, isDragging: false, lastMouse: { x: 0, y: 0 } });
+  const rulerRef = useRef({ isDrawing: false, start: null, end: null });
+  const modeRef = useRef(isRulerMode);
   const SCALE = 12; // 1 meter = 12 pixels
+
+  useEffect(() => {
+    modeRef.current = isRulerMode;
+    if (canvasRef.current) {
+      canvasRef.current.style.cursor = isRulerMode ? 'crosshair' : 'grab';
+    }
+  }, [isRulerMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -24,28 +33,54 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
     };
     resetState();
 
-    // Panning event listeners
+    // Panning & Ruler event listeners
     const handlePointerDown = (e) => {
-      cameraRef.current.isDragging = true;
-      cameraRef.current.lastMouse = { x: e.clientX, y: e.clientY };
-      canvas.style.cursor = 'grabbing';
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      if (modeRef.current) {
+        // Ruler Mode
+        rulerRef.current.isDrawing = true;
+        rulerRef.current.start = { 
+          x: mouseX - cameraRef.current.x, 
+          y: mouseY - cameraRef.current.y 
+        };
+        rulerRef.current.end = { ...rulerRef.current.start };
+      } else {
+        // Panning Mode
+        cameraRef.current.isDragging = true;
+        cameraRef.current.lastMouse = { x: e.clientX, y: e.clientY };
+        canvas.style.cursor = 'grabbing';
+      }
     };
 
     const handlePointerMove = (e) => {
-      if (!cameraRef.current.isDragging) return;
-      const dx = e.clientX - cameraRef.current.lastMouse.x;
-      const dy = e.clientY - cameraRef.current.lastMouse.y;
-      cameraRef.current.x += dx;
-      cameraRef.current.y += dy;
-      cameraRef.current.lastMouse = { x: e.clientX, y: e.clientY };
+      if (modeRef.current && rulerRef.current.isDrawing) {
+        const rect = canvas.getBoundingClientRect();
+        rulerRef.current.end = {
+          x: (e.clientX - rect.left) - cameraRef.current.x,
+          y: (e.clientY - rect.top) - cameraRef.current.y
+        };
+      } else if (!modeRef.current && cameraRef.current.isDragging) {
+        const dx = e.clientX - cameraRef.current.lastMouse.x;
+        const dy = e.clientY - cameraRef.current.lastMouse.y;
+        cameraRef.current.x += dx;
+        cameraRef.current.y += dy;
+        cameraRef.current.lastMouse = { x: e.clientX, y: e.clientY };
+      }
     };
 
     const handlePointerUpOrLeave = () => {
-      cameraRef.current.isDragging = false;
-      canvas.style.cursor = 'grab';
+      if (modeRef.current) {
+        rulerRef.current.isDrawing = false;
+      } else {
+        cameraRef.current.isDragging = false;
+        canvas.style.cursor = 'grab';
+      }
     };
 
-    canvas.style.cursor = 'grab';
+    canvas.style.cursor = modeRef.current ? 'crosshair' : 'grab';
     canvas.addEventListener('pointerdown', handlePointerDown);
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUpOrLeave);
@@ -62,10 +97,10 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
       const L = length * SCALE;
       const WB = wheelbase * SCALE;
       
-      const laneWidthPx = (config.laneWidth || 3.5) * SCALE;
-      const { lanesPerDirection } = config;
+      const laneWidthPx = (config.trainLaneWidth || 3.5) * SCALE;
+      const roadWidthPerDirectionPx = (config.roadWidthPerDirection || 10.5) * SCALE;
       const intersectionMarginPx = (config.intersectionMargin || 0) * SCALE;
-      const halfRW = (lanesPerDirection * laneWidthPx) + intersectionMarginPx;
+      const halfRW = roadWidthPerDirectionPx + intersectionMarginPx;
       const RW = halfRW * 2;
       
       // Train is in the innermost lane (LHT: rightmost lane of the left side)
@@ -82,16 +117,17 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
       const rLeft = intX - halfRW;
       const rRight = intX + halfRW;
 
+      const overshotXPx = (overshotX || 0) * SCALE;
       // Vehicle path 1: Eastbound (top half) turning Southbound (right half) - LHT Right Turn
       const cy = intY - laneOff;
-      const vx = intX + laneOff;
+      const vx = intX + laneOff + overshotXPx;
       const acy = cy + R;
       const acx = vx - R;
       const cx = acx;
 
       // Vehicle path 2: Northbound (from South) turning Westbound - LHT Left Turn
       const vx2 = intX - laneOff;
-      const cy2 = intY + laneOff;
+      const cy2 = intY + laneOff - overshotXPx;
       const acy2 = cy2 + R;
       const acx2 = vx2 - R;
 
@@ -121,7 +157,7 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
       //   DRAW ENVIRONMENT
       // ==========================================
 
-      drawIntersection(ctx, cw, ch, intX, intY, rTop, rBot, rLeft, rRight, RW, halfRW, acx, acy, laneWidthPx, lanesPerDirection, rInnerSweep, rOuterSweep, SCALE);
+      drawIntersection(ctx, cw, ch, intX, intY, rTop, rBot, rLeft, rRight, RW, halfRW, acx, acy, laneWidthPx, roadWidthPerDirectionPx, rInnerSweep, rOuterSweep, SCALE);
       
       if (showSecondTrain) {
          // Draw sweep paths for second train
@@ -145,8 +181,74 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
          }
       }
 
+      if (config.showDimensions) {
+        const drawDim = (r, angle, color, label, val) => {
+          if (r <= 0) return;
+          const ex = acx + r * Math.cos(angle);
+          const ey = acy + r * Math.sin(angle);
+          
+          ctx.beginPath();
+          ctx.moveTo(acx, acy);
+          ctx.lineTo(ex, ey);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 4]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          
+          ctx.beginPath();
+          ctx.arc(ex, ey, 4, 0, Math.PI*2);
+          ctx.fillStyle = color;
+          ctx.fill();
+          
+          ctx.save();
+          const midX = acx + (r/2) * Math.cos(angle);
+          const midY = acy + (r/2) * Math.sin(angle);
+          ctx.translate(midX, midY);
+          let textAngle = angle;
+          if (textAngle > Math.PI/2 || textAngle < -Math.PI/2) textAngle += Math.PI;
+          ctx.rotate(textAngle);
+          
+          const text = `${label}: ${val.toFixed(1)}m`;
+          ctx.font = 'bold 12px Inter, sans-serif';
+          const tMetrics = ctx.measureText(text);
+          const tWidth = tMetrics.width + 12;
+          
+          ctx.fillStyle = 'rgba(0,0,0,0.75)';
+          ctx.beginPath();
+          ctx.roundRect(-tWidth/2, -12, tWidth, 24, 4);
+          ctx.fill();
+          
+          ctx.fillStyle = color;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(text, 0, 0);
+          ctx.restore();
+        };
+
+        // Draw radial dimensions pointing to the Top-Right quadrant of the arc center (where the primary turn is)
+        // Note: Canvas Y is down, so Top is -Y, Right is +X. Angles between 0 and -PI/2.
+        drawDim(rInnerSweep, -Math.PI / 2.5, '#3b82f6', 'rInner', rInnerSweep / SCALE);
+        drawDim(R, -Math.PI / 4, '#22c55e', 'Radius', R / SCALE);
+        drawDim(rOuterSweep, -Math.PI / 7, '#ef4444', 'rOuter', rOuterSweep / SCALE);
+        
+        ctx.beginPath();
+        ctx.arc(acx, acy, 6, 0, Math.PI*2);
+        ctx.fillStyle = '#facc15';
+        ctx.fill();
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 13px Inter, sans-serif';
+        ctx.fillText("Pusat Radius", acx - 40, acy + 18);
+        ctx.fillStyle = '#facc15';
+        ctx.fillText("Pusat Radius", acx - 41, acy + 17);
+      }
+
       if (showCars) {
-          drawCarsForScale(ctx, intX, intY, laneWidthPx, lanesPerDirection, SCALE);
+          drawCarsForScale(ctx, intX, intY, laneWidthPx, roadWidthPerDirectionPx, SCALE);
       }
 
       // ==========================================
@@ -297,6 +399,59 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
       drawTrain(carriageStates, true);
       if (showSecondTrain) drawTrain(carriageStates2, false);
 
+      // ==========================================
+      //   RULER
+      // ==========================================
+      const rStart = rulerRef.current.start;
+      const rEnd = rulerRef.current.end;
+      if (rStart && rEnd) {
+        ctx.beginPath();
+        ctx.moveTo(rStart.x, rStart.y);
+        ctx.lineTo(rEnd.x, rEnd.y);
+        ctx.strokeStyle = '#facc15'; 
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        
+        ctx.fillStyle = '#facc15';
+        ctx.beginPath(); ctx.arc(rStart.x, rStart.y, 4, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(rEnd.x, rEnd.y, 4, 0, Math.PI*2); ctx.fill();
+        
+        const dx = rEnd.x - rStart.x;
+        const dy = rEnd.y - rStart.y;
+        const distPx = Math.sqrt(dx*dx + dy*dy);
+        const distM = (distPx / SCALE).toFixed(2);
+        
+        const midX = rStart.x + dx / 2;
+        const midY = rStart.y + dy / 2;
+        
+        ctx.save();
+        ctx.translate(midX, midY);
+        let angle = Math.atan2(dy, dx);
+        if (angle > Math.PI/2 || angle < -Math.PI/2) angle += Math.PI;
+        ctx.rotate(angle);
+        
+        const text = `${distM} m`;
+        ctx.font = 'bold 14px Inter, sans-serif';
+        const tMetrics = ctx.measureText(text);
+        const tWidth = tMetrics.width + 16;
+        
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        ctx.beginPath();
+        ctx.roundRect(-tWidth/2, -26, tWidth, 24, 6);
+        ctx.fill();
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        
+        ctx.fillStyle = '#facc15';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, 0, -14);
+        ctx.restore();
+      }
+
       // Loop animation
       const last = carriageStates[carriageStates.length - 1];
       if (last.y > -L * 2) {
@@ -319,7 +474,7 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
       if (canvas) canvas.removeEventListener('pointerdown', handlePointerDown);
       cancelAnimationFrame(animationFrameId);
     };
-  }, [config, isPlaying, resetTrigger, isCrash]);
+  }, [config, isPlaying, resetTrigger, isCrash, isRulerMode]);
 
   return <canvas ref={canvasRef} />;
 };
@@ -327,7 +482,7 @@ const ArtCanvas = ({ config, isPlaying, resetTrigger, isCrash }) => {
 // ==========================================
 //   INTERSECTION DRAWING
 // ==========================================
-function drawIntersection(ctx, cw, ch, intX, intY, rTop, rBot, rLeft, rRight, RW, halfRW, acx, acy, laneWidthPx, lanesPerDirection, rInnerSweep, rOuterSweep, SCALE) {
+function drawIntersection(ctx, cw, ch, intX, intY, rTop, rBot, rLeft, rRight, RW, halfRW, acx, acy, laneWidthPx, roadWidthPerDirectionPx, rInnerSweep, rOuterSweep, SCALE) {
   // 1. Green islands (4 quadrants)
   ctx.fillStyle = 'rgba(34,197,94,0.12)';
   ctx.fillRect(-2000, -2000, rLeft + 2000, rTop + 2000);
@@ -362,32 +517,46 @@ function drawIntersection(ctx, cw, ch, intX, intY, rTop, rBot, rLeft, rRight, RW
   ctx.moveTo(intX + 1, rBot); ctx.lineTo(intX + 1, ch + 2000);
   ctx.stroke();
 
-  // 4. Lane markings (dashed white)
-  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  // 4. Lane markings
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
   ctx.lineWidth = 2;
+  
+  // Solid line for ART lane
+  ctx.beginPath();
+  const artL = laneWidthPx;
+  ctx.moveTo(-2000, intY - artL); ctx.lineTo(rLeft, intY - artL);
+  ctx.moveTo(rRight, intY - artL); ctx.lineTo(cw + 2000, intY - artL);
+  ctx.moveTo(-2000, intY + artL); ctx.lineTo(rLeft, intY + artL);
+  ctx.moveTo(rRight, intY + artL); ctx.lineTo(cw + 2000, intY + artL);
+
+  ctx.moveTo(intX - artL, -2000); ctx.lineTo(intX - artL, rTop);
+  ctx.moveTo(intX - artL, rBot); ctx.lineTo(intX - artL, ch + 2000);
+  ctx.moveTo(intX + artL, -2000); ctx.lineTo(intX + artL, rTop);
+  ctx.moveTo(intX + artL, rBot); ctx.lineTo(intX + artL, ch + 2000);
+  ctx.stroke();
+
+  // Dashed lines for remaining lanes
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
   ctx.setLineDash([15, 15]);
-
-  for (let i = 1; i < lanesPerDirection; i++) {
-    const offset = i * laneWidthPx;
-    // Horizontal lanes (Top and Bottom halves)
-    ctx.beginPath();
-    // Top half (Eastbound)
-    ctx.moveTo(-2000, intY - offset); ctx.lineTo(rLeft, intY - offset);
-    ctx.moveTo(rRight, intY - offset); ctx.lineTo(cw + 2000, intY - offset);
-    // Bottom half (Westbound)
-    ctx.moveTo(-2000, intY + offset); ctx.lineTo(rLeft, intY + offset);
-    ctx.moveTo(rRight, intY + offset); ctx.lineTo(cw + 2000, intY + offset);
-    ctx.stroke();
-
-    // Vertical lanes (Left and Right halves)
-    ctx.beginPath();
-    // Left half (Northbound)
-    ctx.moveTo(intX - offset, -2000); ctx.lineTo(intX - offset, rTop);
-    ctx.moveTo(intX - offset, rBot); ctx.lineTo(intX - offset, ch + 2000);
-    // Right half (Southbound)
-    ctx.moveTo(intX + offset, -2000); ctx.lineTo(intX + offset, rTop);
-    ctx.moveTo(intX + offset, rBot); ctx.lineTo(intX + offset, ch + 2000);
-    ctx.stroke();
+  const remW = roadWidthPerDirectionPx - artL;
+  const numLanes = Math.max(1, Math.floor(remW / (3.5 * SCALE)));
+  if (numLanes > 1) {
+    const wPerLane = remW / numLanes;
+    for (let i = 1; i < numLanes; i++) {
+      const offset = artL + i * wPerLane;
+      ctx.beginPath();
+      // Horizontal
+      ctx.moveTo(-2000, intY - offset); ctx.lineTo(rLeft, intY - offset);
+      ctx.moveTo(rRight, intY - offset); ctx.lineTo(cw + 2000, intY - offset);
+      ctx.moveTo(-2000, intY + offset); ctx.lineTo(rLeft, intY + offset);
+      ctx.moveTo(rRight, intY + offset); ctx.lineTo(cw + 2000, intY + offset);
+      // Vertical
+      ctx.moveTo(intX - offset, -2000); ctx.lineTo(intX - offset, rTop);
+      ctx.moveTo(intX - offset, rBot); ctx.lineTo(intX - offset, ch + 2000);
+      ctx.moveTo(intX + offset, -2000); ctx.lineTo(intX + offset, rTop);
+      ctx.moveTo(intX + offset, rBot); ctx.lineTo(intX + offset, ch + 2000);
+      ctx.stroke();
+    }
   }
   ctx.setLineDash([]);
 
@@ -559,7 +728,7 @@ function drawCurve(ctx, cw, ch, intX, intY, acx, acy, cx, cy, vx, R, RW, halfRW,
 // ==========================================
 //   STATIC CARS (FOR VISUAL SCALE)
 // ==========================================
-function drawCarsForScale(ctx, intX, intY, laneWidthPx, lanesPerDirection, SCALE) {
+function drawCarsForScale(ctx, intX, intY, laneWidthPx, roadWidthPerDirectionPx, SCALE) {
   // Typical family car dimensions: 4.5m length, 1.8m width
   const carL = 4.5 * SCALE;
   const carW = 1.8 * SCALE;
@@ -590,20 +759,23 @@ function drawCarsForScale(ctx, intX, intY, laneWidthPx, lanesPerDirection, SCALE
     ctx.restore();
   };
 
-  const halfRW = lanesPerDirection * laneWidthPx;
+  const halfRW = roadWidthPerDirectionPx;
+  const remW = roadWidthPerDirectionPx - laneWidthPx;
+  const numLanes = Math.max(1, Math.floor(remW / (3.5 * SCALE)));
+  const wPerLane = remW / numLanes;
 
   // LHT: Traffic waits before entering the intersection box.
   
   // Westbound traffic (Bottom half) waiting at the East intersection line (facing Left / Math.PI)
-  for (let i = 0; i < lanesPerDirection; i++) {
-    const laneY = intY + (laneWidthPx / 2) + (i * laneWidthPx);
+  for (let i = 0; i < numLanes; i++) {
+    const laneY = intY + laneWidthPx + (wPerLane / 2) + (i * wPerLane);
     drawCar(intX + halfRW + 4*SCALE, laneY, Math.PI, i === 0 ? '#facc15' : '#38bdf8');
     if (i > 0) drawCar(intX + halfRW + 10*SCALE, laneY, Math.PI, '#94a3b8'); // Second car in outer lanes
   }
 
   // Northbound traffic (Left half) waiting at the South intersection line (facing Up / -Math.PI/2)
-  for (let i = 0; i < lanesPerDirection; i++) {
-    const laneX = intX - (laneWidthPx / 2) - (i * laneWidthPx);
+  for (let i = 0; i < numLanes; i++) {
+    const laneX = intX - laneWidthPx - (wPerLane / 2) - (i * wPerLane);
     drawCar(laneX, intY + halfRW + 4*SCALE, -Math.PI/2, '#ef4444');
     if (i > 0) drawCar(laneX, intY + halfRW + 11*SCALE, -Math.PI/2, '#a8a29e');
   }

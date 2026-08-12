@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { MessageSquare } from 'lucide-react';
 
-const Sidebar = ({ config, setConfig, onAutoRecommend }) => {
+const Sidebar = ({ config, setConfig }) => {
   const [chatInput, setChatInput] = useState('');
 
   const handleChange = (e) => {
@@ -143,25 +143,25 @@ const Sidebar = ({ config, setConfig, onAutoRecommend }) => {
 
         <div className="input-field">
           <label>
-            <span>Jumlah Lajur (Per Arah)</span>
-            <span className="value">{config.lanesPerDirection}</span>
+            <span>Total Lebar Jalan (Satu Arah) (m)</span>
+            <span className="value">{config.roadWidthPerDirection}</span>
           </label>
           <input 
-            type="range" name="lanesPerDirection" 
-            min="2" max="5" step="1" 
-            value={config.lanesPerDirection} onChange={handleChange} 
+            type="range" name="roadWidthPerDirection" 
+            min="5" max="30" step="0.5" 
+            value={config.roadWidthPerDirection} onChange={handleChange} 
           />
         </div>
 
         <div className="input-field">
           <label>
-            <span>Lebar per Lajur (m)</span>
-            <span className="value">{config.laneWidth}</span>
+            <span>Lebar Lajur ART (m)</span>
+            <span className="value">{config.trainLaneWidth}</span>
           </label>
           <input 
-            type="range" name="laneWidth" 
-            min="2.5" max="6.0" step="0.1" 
-            value={config.laneWidth} onChange={handleChange} 
+            type="range" name="trainLaneWidth" 
+            min="2.5" max="5.0" step="0.1" 
+            value={config.trainLaneWidth} onChange={handleChange} 
           />
         </div>
 
@@ -175,27 +175,6 @@ const Sidebar = ({ config, setConfig, onAutoRecommend }) => {
             min="0" max="50" step="1" 
             value={config.intersectionMargin} onChange={handleChange} 
           />
-        </div>
-
-        <div className="input-field">
-          <label>
-            <span>Target Radius Jalan (m)</span>
-            <span className="value">{config.targetRadius}</span>
-          </label>
-          <input 
-            type="range" name="targetRadius" 
-            min="10" max="100" step="1" 
-            value={config.targetRadius} onChange={handleChange} 
-          />
-          <button 
-            type="button" 
-            onClick={onAutoRecommend}
-            style={{ marginTop: '8px', padding: '8px', background: 'var(--accent-primary)', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: '600', transition: 'background 0.2s' }}
-            onMouseOver={(e) => e.target.style.background = 'var(--accent-hover)'}
-            onMouseOut={(e) => e.target.style.background = 'var(--accent-primary)'}
-          >
-            ✨ Auto Rekomendasi Radius
-          </button>
         </div>
 
         <div className="input-field">
@@ -228,6 +207,16 @@ const Sidebar = ({ config, setConfig, onAutoRecommend }) => {
               style={{ width: '16px', height: '16px' }}
             />
             Simulasi 2 Kereta (Berlawanan)
+          </label>
+        </div>
+        <div className="input-field checkbox">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input 
+              type="checkbox" 
+              checked={config.showDimensions} 
+              onChange={(e) => setConfig({...config, showDimensions: e.target.checked})} 
+            />
+            Tampilkan Garis Ukuran (Visual)
           </label>
         </div>
       </div>
