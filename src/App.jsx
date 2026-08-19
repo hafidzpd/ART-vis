@@ -169,6 +169,32 @@ function App() {
     }
   }, []);
 
+  const loadDefaultTrace = useCallback(async () => {
+    try {
+      const res = await fetch('/kode-trace-bgjunction');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.outer && data.inner && data.trainPath) {
+        setBoundaries({ outer: data.outer, inner: data.inner });
+        setTrainPath(data.trainPath);
+        if (data.rulerPoints) setRulerPoints(data.rulerPoints);
+        if (data.pixelsPerMeter) setPixelsPerMeter(data.pixelsPerMeter);
+        setResetTrigger(t => t + 1);
+        setSimState({ progress: 0, hasCollision: false, collisionCount: 0, finished: false, distance: 0 });
+        setIsPlaying(false);
+      }
+    } catch (e) {
+      console.error("Failed to load default trace", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    const savedPath = localStorage.getItem('artvis_path');
+    if (savedPath === null) {
+      loadDefaultTrace();
+    }
+  }, [loadDefaultTrace]);
+
   const handleReset = useCallback(() => {
     setResetTrigger(t => t + 1);
     setIsPlaying(true);
@@ -199,6 +225,7 @@ function App() {
         onClearAllPoints={handleClearAllPoints}
         onExportCoordinates={handleExportCoordinates}
         onImportCoordinates={handleImportCoordinates}
+        onLoadDefaultTrace={loadDefaultTrace}
       />
 
       <DashboardHUD

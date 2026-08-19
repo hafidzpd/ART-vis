@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Crosshair, Trash2, Undo2, Download, Upload, ChevronDown, ChevronRight } from 'lucide-react';
+import { Crosshair, Trash2, Undo2, Download, Upload, ChevronDown, ChevronRight, Map } from 'lucide-react';
 
 const Sidebar = ({
   config,
@@ -16,6 +16,7 @@ const Sidebar = ({
   onClearAllPoints,
   onExportCoordinates,
   onImportCoordinates,
+  onLoadDefaultTrace,
 }) => {
   const [devModeOpen, setDevModeOpen] = useState(true);
   const [exportText, setExportText] = useState('');
@@ -243,6 +244,15 @@ const Sidebar = ({
               >
                 <Upload size={14} />
                 Import
+              </button>
+
+              <button
+                className="btn-trace-action"
+                onClick={onLoadDefaultTrace}
+                title="Muat trace default (BG Junction)"
+              >
+                <Map size={14} />
+                Default
               </button>
 
               <button
