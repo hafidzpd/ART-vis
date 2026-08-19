@@ -1,78 +1,63 @@
 import React, { useState } from 'react';
-import { MessageSquare } from 'lucide-react';
+import { Crosshair, Trash2, Undo2, Download, Upload, ChevronDown, ChevronRight } from 'lucide-react';
 
-const Sidebar = ({ config, setConfig }) => {
-  const [chatInput, setChatInput] = useState('');
+const Sidebar = ({
+  config,
+  setConfig,
+  simulationSpeed,
+  setSimulationSpeed,
+  tracingMode,
+  setTracingMode,
+  pixelsPerMeter,
+  setPixelsPerMeter,
+  boundaries,
+  trainPath,
+  onUndoPoint,
+  onClearAllPoints,
+  onExportCoordinates,
+  onImportCoordinates,
+}) => {
+  const [devModeOpen, setDevModeOpen] = useState(true);
+  const [exportText, setExportText] = useState('');
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setConfig((prev) => ({ ...prev, [name]: parseFloat(value) }));
   };
 
-  const handleChatSubmit = (e) => {
-    e.preventDefault();
-    const text = chatInput.toLowerCase();
-    
-    let newConfig = { ...config };
-    
-    // Parse gerbong (carriages)
-    const gerbongMatch = text.match(/(\d+)\s*gerbong/);
-    if (gerbongMatch) {
-      const val = parseInt(gerbongMatch[1]);
-      if (val >= 3 && val <= 5) newConfig.carriages = val;
-    }
+  const handleSpeedChange = (e) => {
+    setSimulationSpeed(parseFloat(e.target.value));
+  };
 
-    // Parse kecepatan (speed)
-    const speedMatch = text.match(/kecepatan\s*(\d+)/) || text.match(/(\d+)\s*km\/jam/);
-    if (speedMatch) {
-      const val = parseInt(speedMatch[1]);
-      if (val >= 5 && val <= 70) newConfig.speed = val;
-    }
+  const handleExport = () => {
+    const text = onExportCoordinates();
+    setExportText(text);
+  };
 
-    // Parse radius
-    const radiusMatch = text.match(/radius\s*(\d+)/) || text.match(/(\d+)\s*meter/);
-    if (radiusMatch) {
-      const val = parseInt(radiusMatch[1]);
-      if (val >= 10 && val <= 100) newConfig.targetRadius = val;
-    }
-    
-    // Parse lebar jalan (road width)
-    const lanesMatch = text.match(/(\d+)\s*lajur/);
-    if (lanesMatch) {
-      const val = parseInt(lanesMatch[1]);
-      if (val >= 2 && val <= 5) newConfig.lanesPerDirection = val;
-    }
-
-    // Parse layout
-    if (text.includes('perempatan')) {
-      newConfig.layoutType = 'intersection';
-    } else if (text.includes('belokan') || text.includes('tikungan')) {
-      newConfig.layoutType = 'curve';
-    }
-
-    setConfig(newConfig);
-    setChatInput('');
+  const toggleTracingMode = (mode) => {
+    setTracingMode(prev => prev === mode ? 'off' : mode);
   };
 
   return (
     <div className="sidebar">
       <div className="sidebar-header">
         <h1>ART-Vis</h1>
-        <p>Simulator Dimensi & Fisika Autonomous Rail Transit</p>
+        <p>Validator Rute Berbasis Citra Satelit — Autonomous Rail Transit</p>
       </div>
 
+      {/* Vehicle Specifications */}
       <div className="control-group">
         <h3>Spesifikasi Kendaraan</h3>
-        
+
         <div className="input-field">
           <label>
             <span>Jumlah Gerbong (3-5)</span>
             <span className="value">{config.carriages}</span>
           </label>
-          <input 
-            type="range" name="carriages" 
-            min="3" max="5" step="1" 
-            value={config.carriages} onChange={handleChange} 
+          <input
+            type="range" name="carriages"
+            min="3" max="5" step="1"
+            value={config.carriages} onChange={handleChange}
           />
         </div>
 
@@ -81,10 +66,10 @@ const Sidebar = ({ config, setConfig }) => {
             <span>Panjang per Gerbong (m)</span>
             <span className="value">{config.length}</span>
           </label>
-          <input 
-            type="range" name="length" 
-            min="8" max="15" step="0.5" 
-            value={config.length} onChange={handleChange} 
+          <input
+            type="range" name="length"
+            min="8" max="15" step="0.5"
+            value={config.length} onChange={handleChange}
           />
         </div>
 
@@ -93,10 +78,10 @@ const Sidebar = ({ config, setConfig }) => {
             <span>Lebar (m)</span>
             <span className="value">{config.width}</span>
           </label>
-          <input 
-            type="range" name="width" 
-            min="2.0" max="3.5" step="0.1" 
-            value={config.width} onChange={handleChange} 
+          <input
+            type="range" name="width"
+            min="2.0" max="3.5" step="0.1"
+            value={config.width} onChange={handleChange}
           />
         </div>
 
@@ -105,75 +90,22 @@ const Sidebar = ({ config, setConfig }) => {
             <span>Jarak Sumbu Roda / Wheelbase (m)</span>
             <span className="value">{config.wheelbase}</span>
           </label>
-          <input 
-            type="range" name="wheelbase" 
-            min="4" max="10" step="0.1" 
-            value={config.wheelbase} onChange={handleChange} 
+          <input
+            type="range" name="wheelbase"
+            min="4" max="10" step="0.1"
+            value={config.wheelbase} onChange={handleChange}
           />
         </div>
 
         <div className="input-field">
           <label>
-            <span>Sudut Belok Maksimal (derajat)</span>
+            <span>Sudut Belok Maksimal (°)</span>
             <span className="value">{config.maxSteeringAngle}</span>
           </label>
-          <input 
-            type="range" name="maxSteeringAngle" 
-            min="15" max="45" step="1" 
-            value={config.maxSteeringAngle} onChange={handleChange} 
-          />
-        </div>
-      </div>
-
-      <div className="control-group">
-        <h3>Dinamika & Lingkungan</h3>
-        
-        <div className="input-field" style={{ flexDirection: 'row', gap: '16px', alignItems: 'center' }}>
-           <label style={{ flex: 1, color: 'white', fontWeight: 600 }}>Tipe Jalan:</label>
-           <select 
-             name="layoutType" 
-             value={config.layoutType} 
-             onChange={(e) => setConfig(prev => ({ ...prev, layoutType: e.target.value }))}
-             style={{ flex: 2, padding: '8px', borderRadius: '4px', background: 'rgba(0,0,0,0.5)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}
-           >
-             <option value="intersection">Perempatan</option>
-             <option value="curve">Belokan Biasa</option>
-           </select>
-        </div>
-
-        <div className="input-field">
-          <label>
-            <span>Total Lebar Jalan (Satu Arah) (m)</span>
-            <span className="value">{config.roadWidthPerDirection}</span>
-          </label>
-          <input 
-            type="range" name="roadWidthPerDirection" 
-            min="5" max="30" step="0.5" 
-            value={config.roadWidthPerDirection} onChange={handleChange} 
-          />
-        </div>
-
-        <div className="input-field">
-          <label>
-            <span>Lebar Lajur ART (m)</span>
-            <span className="value">{config.trainLaneWidth}</span>
-          </label>
-          <input 
-            type="range" name="trainLaneWidth" 
-            min="2.5" max="5.0" step="0.1" 
-            value={config.trainLaneWidth} onChange={handleChange} 
-          />
-        </div>
-
-        <div className="input-field">
-          <label>
-            <span>Luas Ekstra Perempatan (m)</span>
-            <span className="value">{config.intersectionMargin}</span>
-          </label>
-          <input 
-            type="range" name="intersectionMargin" 
-            min="0" max="50" step="1" 
-            value={config.intersectionMargin} onChange={handleChange} 
+          <input
+            type="range" name="maxSteeringAngle"
+            min="15" max="45" step="1"
+            value={config.maxSteeringAngle} onChange={handleChange}
           />
         </div>
 
@@ -182,56 +114,167 @@ const Sidebar = ({ config, setConfig }) => {
             <span>Jarak Aman / Clearance (m)</span>
             <span className="value">{config.clearance}</span>
           </label>
-          <input 
-            type="range" name="clearance" 
-            min="0" max="2" step="0.1" 
-            value={config.clearance} onChange={handleChange} 
+          <input
+            type="range" name="clearance"
+            min="0" max="2" step="0.1"
+            value={config.clearance} onChange={handleChange}
           />
-        </div>
-
-        <div className="control-group">
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginTop: '10px' }}>
-            <input 
-              type="checkbox" 
-              checked={config.showCars} 
-              onChange={(e) => setConfig({ ...config, showCars: e.target.checked })}
-              style={{ width: '16px', height: '16px' }}
-            />
-            Tampilkan Mobil (Skala)
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginTop: '10px' }}>
-            <input 
-              type="checkbox" 
-              checked={config.showSecondTrain} 
-              onChange={(e) => setConfig({ ...config, showSecondTrain: e.target.checked })}
-              style={{ width: '16px', height: '16px' }}
-            />
-            Simulasi 2 Kereta (Berlawanan)
-          </label>
-        </div>
-        <div className="input-field checkbox">
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-            <input 
-              type="checkbox" 
-              checked={config.showDimensions} 
-              onChange={(e) => setConfig({...config, showDimensions: e.target.checked})} 
-            />
-            Tampilkan Garis Ukuran (Visual)
-          </label>
         </div>
       </div>
 
-      <div className="control-group chatbot-group">
-        <h3><MessageSquare size={16} /> Perintah AI</h3>
-        <form onSubmit={handleChatSubmit}>
-          <input 
-            type="text" 
-            className="chatbot-input"
-            placeholder="Coba: 'buat 4 gerbong dengan radius 50 meter'"
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
+      {/* Scale Calibration */}
+      <div className="control-group">
+        <h3>Kalibrasi Skala Peta</h3>
+        <div className="input-field">
+          <label>
+            <span>Rasio (Piksel per Meter)</span>
+            <span className="value">{pixelsPerMeter.toFixed(1)} px/m</span>
+          </label>
+          <input
+            type="range"
+            min="1" max="15" step="0.1"
+            value={pixelsPerMeter}
+            onChange={(e) => setPixelsPerMeter(parseFloat(e.target.value))}
           />
-        </form>
+        </div>
+      </div>
+
+      {/* Simulation Speed */}
+      <div className="control-group">
+        <h3>Kecepatan Simulasi</h3>
+        <div className="input-field">
+          <label>
+            <span>Playback Speed (km/h)</span>
+            <span className="value">{simulationSpeed}</span>
+          </label>
+          <input
+            type="range"
+            min="5" max="80" step="5"
+            value={simulationSpeed}
+            onChange={handleSpeedChange}
+          />
+        </div>
+      </div>
+
+      {/* Developer Mode — Tracing Tools */}
+      <div className="control-group dev-mode-panel">
+        <h3
+          onClick={() => setDevModeOpen(!devModeOpen)}
+          style={{ cursor: 'pointer', userSelect: 'none' }}
+        >
+          {devModeOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          🛠️ Developer Mode
+        </h3>
+
+        {devModeOpen && (
+          <div className="dev-mode-content">
+            <p className="dev-mode-hint">
+              Klik gambar peta untuk menambah titik. Pilih mode di bawah:
+            </p>
+
+            {/* Tracing mode toggles */}
+            <div className="tracing-buttons">
+              <button
+                className={`btn-trace ${tracingMode === 'outer' ? 'active' : ''}`}
+                onClick={() => toggleTracingMode('outer')}
+                style={{ '--trace-color': '#ef4444' }}
+              >
+                <span className="trace-dot" style={{ background: '#ef4444' }} />
+                Batas Luar
+                <span className="trace-count">{boundaries.outer.length}</span>
+              </button>
+
+              <button
+                className={`btn-trace ${tracingMode === 'inner' ? 'active' : ''}`}
+                onClick={() => toggleTracingMode('inner')}
+                style={{ '--trace-color': '#3b82f6' }}
+              >
+                <span className="trace-dot" style={{ background: '#3b82f6' }} />
+                Batas Dalam
+                <span className="trace-count">{boundaries.inner.length}</span>
+              </button>
+
+              <button
+                className={`btn-trace ${tracingMode === 'path' ? 'active' : ''}`}
+                onClick={() => toggleTracingMode('path')}
+                style={{ '--trace-color': '#22c55e' }}
+              >
+                <span className="trace-dot" style={{ background: '#22c55e' }} />
+                Path Kereta
+                <span className="trace-count">{trainPath.length}</span>
+              </button>
+
+              <button
+                className={`btn-trace ${tracingMode === 'ruler' ? 'active' : ''}`}
+                onClick={() => toggleTracingMode('ruler')}
+                style={{ '--trace-color': '#a855f7' }}
+                title="Gunakan untuk mengukur jarak dan kalibrasi skala peta"
+              >
+                <span className="trace-dot" style={{ background: '#a855f7' }} />
+                📏 Alat Ukur
+              </button>
+            </div>
+
+            {/* Action buttons */}
+            <div className="trace-actions">
+              <button
+                className="btn-trace-action"
+                onClick={onUndoPoint}
+                disabled={tracingMode === 'off'}
+                title="Hapus titik terakhir"
+              >
+                <Undo2 size={14} />
+                Undo
+              </button>
+
+              <button
+                className="btn-trace-action"
+                onClick={handleExport}
+                title="Export koordinat ke console & textarea"
+              >
+                <Download size={14} />
+                Export
+              </button>
+
+              <button
+                className="btn-trace-action"
+                onClick={onImportCoordinates}
+                title="Import koordinat dari kode JSON"
+              >
+                <Upload size={14} />
+                Import
+              </button>
+
+              <button
+                className="btn-trace-action danger"
+                onClick={onClearAllPoints}
+                title="Hapus semua titik"
+              >
+                <Trash2 size={14} />
+                Reset
+              </button>
+            </div>
+
+            {/* Export textarea */}
+            {exportText && (
+              <textarea
+                className="export-textarea"
+                readOnly
+                value={exportText}
+                rows={8}
+                onClick={(e) => e.target.select()}
+              />
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="control-group" style={{ marginTop: 'auto', opacity: 0.7 }}>
+        <p style={{ fontSize: '0.75rem', color: '#94a3b8', lineHeight: 1.5 }}>
+          <strong>Cara Pakai:</strong> Gunakan Developer Mode untuk trace batas jalan
+          dan path kereta di atas gambar peta. Tekan ▶ untuk menjalankan simulasi.
+          Scroll untuk zoom, drag untuk geser peta.
+        </p>
       </div>
     </div>
   );
