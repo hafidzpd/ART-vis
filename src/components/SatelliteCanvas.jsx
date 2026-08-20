@@ -81,13 +81,13 @@ function computePathLengthMeters(points) {
 // ==========================================
 
 const PLAN_STATIONS = [
-  { id: 1, name: "Halte Terminal Intermoda Joyoboyo", lat: -7.298999, lng: 112.736389 },
+  { id: 1, name: "Halte Terminal Intermoda Joyoboyo", lat: -7.29862, lng: 112.73642 },
   { id: 2, name: "Halte Raya Darmo", lat: -7.287044, lng: 112.739376 },
   { id: 3, name: "Halte Urip Sumoharjo", lat: -7.274010, lng: 112.741940 },
   { id: 4, name: "Halte Basuki Rahmat", lat: -7.271783, lng: 112.741561 },
   { id: 5, name: "Halte Embong Malang", lat: -7.258985, lng: 112.734124 },
   { id: 6, name: "Halte Blauran", lat: -7.255178, lng: 112.734052 },
-  { id: 7, name: "Halte Praban", lat: -7.255178, lng: 112.734052 },
+  { id: 7, name: "Halte Praban", lat: -7.25006, lng: 112.73734 },
   { id: 8, name: "Halte Tunjungan", lat: -7.259898, lng: 112.739251 },
   { id: 9, name: "Halte Gubernur Suryo", lat: -7.263731, lng: 112.744015 },
   { id: 10, name: "Halte Panglima Sudirman", lat: -7.269609, lng: 112.743886 }
@@ -278,13 +278,13 @@ const SatelliteCanvas = ({
 
     const handlePointerUp = (e) => {
       if (tracingMode === 'off') return;
-      
+
       // Only process pointerup if a pointerdown was registered on the canvas
       if (canvas._button == null) return;
 
       const wasDrag = (canvas._dragDist || 0) > 5;
       const btn = canvas._button;
-      
+
       // Reset state for next interaction
       canvas._button = null;
       canvas._lastMouse = null;
@@ -506,7 +506,7 @@ const SatelliteCanvas = ({
           ctx.arc(markerPx.x, markerPx.y, 12, 0, Math.PI * 2);
           ctx.fillStyle = '#f8fafc';
           ctx.fill();
-          
+
           // Outer border
           ctx.lineWidth = 2.5;
           ctx.strokeStyle = '#3b82f6';
@@ -526,7 +526,7 @@ const SatelliteCanvas = ({
           ctx.beginPath();
           ctx.roundRect(markerPx.x - tw / 2 - 6, markerPx.y + 16, tw + 12, 18, 4);
           ctx.fill();
-          
+
           ctx.fillStyle = '#f8fafc';
           ctx.fillText(station.name, markerPx.x, markerPx.y + 25);
         }
@@ -595,10 +595,8 @@ const SatelliteCanvas = ({
     { label: 'Bundaran Waru', query: 'Bundaran Waru' },
     { label: 'Joyoboyo', query: 'Terminal Joyoboyo' },
     { label: 'Wonokromo', query: 'Bundaran Wonokromo' },
-    { label: 'BG Junction', query: 'BG Junction' },
     { label: 'Mayjen Sungkono', query: 'Jl Mayjen Sungkono' },
     { label: 'Ahmad Yani', query: 'Jl Ahmad Yani Surabaya' },
-    { label: 'Gubeng', query: 'Bundaran Dolog Gubeng' },
   ];
 
   // Canvas pointer-events: only intercept when in tracing mode.

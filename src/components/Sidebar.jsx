@@ -266,15 +266,7 @@ const Sidebar = ({
                 Full Route (Loop 10 Halte)
               </button>
               
-              <button
-                className="btn-trace-action"
-                onClick={() => onLoadPreset('bg-junction.json')}
-                title="Muat rute contoh BG Junction (Jl. Blauran - Jl. Praban)"
-                style={{ width: '100%', justifyContent: 'center', background: 'rgba(59, 130, 246, 0.15)', borderColor: 'rgba(59, 130, 246, 0.3)', color: '#93c5fd' }}
-              >
-                <Upload size={14} />
-                Contoh: BG Junction
-              </button>
+
             </div>
 
             {/* Export textarea */}
