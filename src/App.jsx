@@ -23,37 +23,34 @@ function App() {
   // 'off' | 'outer' | 'inner' | 'path' | 'ruler'
   const [tracingMode, setTracingMode] = useState('off');
 
-  // ---- Scale ----
-  const [pixelsPerMeter, setPixelsPerMeter] = useState(() => {
-    const saved = localStorage.getItem('artvis_scale');
-    return saved ? parseFloat(saved) : 4.5;
-  });
+  // ---- Pixels-per-meter (computed dynamically from Google Maps zoom) ----
+  const [pixelsPerMeter, setPixelsPerMeter] = useState(4.5);
 
   // ---- Boundary, Path & Ruler Data ----
+  // Points are now stored as { lat, lng } (v2 keys avoid conflicts with old pixel-space data)
   const [boundaries, setBoundaries] = useState(() => {
-    const saved = localStorage.getItem('artvis_boundaries');
+    const saved = localStorage.getItem('artvis_boundaries_v2');
     return saved ? JSON.parse(saved) : { outer: [], inner: [] };
   });
   const [trainPath, setTrainPath] = useState(() => {
-    const saved = localStorage.getItem('artvis_path');
+    const saved = localStorage.getItem('artvis_path_v2');
     return saved ? JSON.parse(saved) : [];
   });
   const [rulerPoints, setRulerPoints] = useState(() => {
-    const saved = localStorage.getItem('artvis_ruler');
+    const saved = localStorage.getItem('artvis_ruler_v2');
     return saved ? JSON.parse(saved) : [];
   });
-
   // Auto-save to localStorage
   useEffect(() => {
-    localStorage.setItem('artvis_scale', pixelsPerMeter);
-    localStorage.setItem('artvis_boundaries', JSON.stringify(boundaries));
-    localStorage.setItem('artvis_path', JSON.stringify(trainPath));
-    localStorage.setItem('artvis_ruler', JSON.stringify(rulerPoints));
-  }, [pixelsPerMeter, boundaries, trainPath, rulerPoints]);
+    localStorage.setItem('artvis_boundaries_v2', JSON.stringify(boundaries));
+    localStorage.setItem('artvis_path_v2', JSON.stringify(trainPath));
+    localStorage.setItem('artvis_ruler_v2', JSON.stringify(rulerPoints));
+  }, [boundaries, trainPath, rulerPoints]);
 
   // ---- Simulation State ----
   const [isPlaying, setIsPlaying] = useState(false);
   const [resetTrigger, setResetTrigger] = useState(0);
+  const [focusLocation, setFocusLocation] = useState(null);
   const [simState, setSimState] = useState({
     progress: 0,
     hasCollision: false,
@@ -80,18 +77,15 @@ function App() {
 
   // ---- Handlers ----
 
-  /** Add a traced point to the appropriate data array */
+  /**
+   * Add a traced lat/lng point to the appropriate data array.
+   * Points are { lat, lng } — the canvas converts them to pixels each frame.
+   */
   const handleAddPoint = useCallback((point, mode) => {
     if (mode === 'outer') {
-      setBoundaries(prev => ({
-        ...prev,
-        outer: [...prev.outer, point],
-      }));
+      setBoundaries(prev => ({ ...prev, outer: [...prev.outer, point] }));
     } else if (mode === 'inner') {
-      setBoundaries(prev => ({
-        ...prev,
-        inner: [...prev.inner, point],
-      }));
+      setBoundaries(prev => ({ ...prev, inner: [...prev.inner, point] }));
     } else if (mode === 'path') {
       setTrainPath(prev => [...prev, point]);
     } else if (mode === 'ruler') {
@@ -105,15 +99,9 @@ function App() {
   /** Remove the last traced point from the active tracing target */
   const handleUndoPoint = useCallback(() => {
     if (tracingMode === 'outer') {
-      setBoundaries(prev => ({
-        ...prev,
-        outer: prev.outer.slice(0, -1),
-      }));
+      setBoundaries(prev => ({ ...prev, outer: prev.outer.slice(0, -1) }));
     } else if (tracingMode === 'inner') {
-      setBoundaries(prev => ({
-        ...prev,
-        inner: prev.inner.slice(0, -1),
-      }));
+      setBoundaries(prev => ({ ...prev, inner: prev.inner.slice(0, -1) }));
     } else if (tracingMode === 'path') {
       setTrainPath(prev => prev.slice(0, -1));
     } else if (tracingMode === 'ruler') {
@@ -131,69 +119,69 @@ function App() {
     setSimState({ progress: 0, hasCollision: false, collisionCount: 0, finished: false, distance: 0 });
   }, []);
 
-  /** Export traced coordinates for hardcoding */
+  /** Export traced coordinates for saving/sharing */
   const handleExportCoordinates = useCallback(() => {
     const data = {
+      version: 2,
+      format: 'lat-lng',
       outer: boundaries.outer,
       inner: boundaries.inner,
-      trainPath: trainPath,
-      rulerPoints: rulerPoints,
-      pixelsPerMeter: pixelsPerMeter
+      trainPath,
+      rulerPoints,
     };
-    // Safe structured logging for developer use only
-    console.log('=== ART-Vis Traced Coordinates ===');
+    console.log('=== ART-Vis Traced Coordinates (v2 lat/lng) ===');
     console.log(JSON.stringify(data, null, 2));
     return JSON.stringify(data, null, 2);
-  }, [boundaries, trainPath, rulerPoints, pixelsPerMeter]);
+  }, [boundaries, trainPath, rulerPoints]);
 
   /** Import traced coordinates from JSON */
   const handleImportCoordinates = useCallback(() => {
-    const jsonStr = prompt("Tempelkan (Paste) kode hasil export di sini:");
+    const jsonStr = prompt('Tempelkan (Paste) kode hasil export di sini:');
     if (!jsonStr) return;
     try {
       const data = JSON.parse(jsonStr);
+      // Support v2 format (lat/lng)
       if (data.outer && data.inner && data.trainPath) {
         setBoundaries({ outer: data.outer, inner: data.inner });
         setTrainPath(data.trainPath);
         if (data.rulerPoints) setRulerPoints(data.rulerPoints);
-        if (data.pixelsPerMeter) setPixelsPerMeter(data.pixelsPerMeter);
-        alert("Berhasil mengimpor data trace!");
+        alert('Berhasil mengimpor data trace!');
         setResetTrigger(t => t + 1);
         setSimState({ progress: 0, hasCollision: false, collisionCount: 0, finished: false, distance: 0 });
         setIsPlaying(false);
       } else {
-        alert("Format data tidak valid.");
+        alert('Format data tidak valid. Pastikan Anda menggunakan export versi terbaru (lat/lng).');
       }
     } catch (e) {
-      alert("Error: Kode tidak valid. " + e.message);
+      alert('Error: Kode tidak valid. ' + e.message);
     }
   }, []);
 
-  const loadDefaultTrace = useCallback(async () => {
+  const handleLoadPreset = useCallback(async (presetFilename) => {
     try {
-      const res = await fetch('/kode-trace-bgjunction');
-      if (!res.ok) return;
-      const data = await res.json();
+      const response = await fetch(`/presets/${presetFilename}`);
+      if (!response.ok) throw new Error('Network response was not ok');
+      const data = await response.json();
+      
       if (data.outer && data.inner && data.trainPath) {
         setBoundaries({ outer: data.outer, inner: data.inner });
         setTrainPath(data.trainPath);
         if (data.rulerPoints) setRulerPoints(data.rulerPoints);
-        if (data.pixelsPerMeter) setPixelsPerMeter(data.pixelsPerMeter);
+        
+        // Focus the map on the first point of the train path
+        if (data.trainPath.length > 0) {
+          setFocusLocation({ ...data.trainPath[0], zoom: 18, _t: Date.now() });
+        }
+        
         setResetTrigger(t => t + 1);
         setSimState({ progress: 0, hasCollision: false, collisionCount: 0, finished: false, distance: 0 });
         setIsPlaying(false);
       }
-    } catch (e) {
-      console.error("Failed to load default trace", e);
+    } catch (error) {
+      console.error("Failed to load preset:", error);
+      alert('Gagal memuat preset rute.');
     }
   }, []);
-
-  useEffect(() => {
-    const savedPath = localStorage.getItem('artvis_path');
-    if (savedPath === null) {
-      loadDefaultTrace();
-    }
-  }, [loadDefaultTrace]);
 
   const handleReset = useCallback(() => {
     setResetTrigger(t => t + 1);
@@ -203,6 +191,11 @@ function App() {
 
   const handleSimulationUpdate = useCallback((state) => {
     setSimState(state);
+  }, []);
+
+  /** Callback from SatelliteCanvas when map zoom changes */
+  const handlePixelsPerMeterChange = useCallback((ppm) => {
+    setPixelsPerMeter(ppm);
   }, []);
 
   // Determine if simulation can be run
@@ -218,14 +211,13 @@ function App() {
         tracingMode={tracingMode}
         setTracingMode={setTracingMode}
         pixelsPerMeter={pixelsPerMeter}
-        setPixelsPerMeter={setPixelsPerMeter}
         boundaries={boundaries}
         trainPath={trainPath}
         onUndoPoint={handleUndoPoint}
         onClearAllPoints={handleClearAllPoints}
         onExportCoordinates={handleExportCoordinates}
         onImportCoordinates={handleImportCoordinates}
-        onLoadDefaultTrace={loadDefaultTrace}
+        onLoadPreset={handleLoadPreset}
       />
 
       <DashboardHUD
@@ -251,7 +243,8 @@ function App() {
           resetTrigger={resetTrigger}
           onSimulationUpdate={handleSimulationUpdate}
           simulationSpeed={simulationSpeed}
-          pixelsPerMeter={pixelsPerMeter}
+          onPixelsPerMeterChange={handlePixelsPerMeterChange}
+          focusLocation={focusLocation}
         />
 
         <div className="playback-controls">

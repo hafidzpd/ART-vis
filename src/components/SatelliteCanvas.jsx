@@ -1,24 +1,108 @@
-import React, { useRef, useEffect, useCallback } from 'react';
-import { MAP_IMAGE_PATH } from '../utils/scaleConfig';
-import { computeCumulativeDistances, getPositionAlongPath, getVehicleCorners, checkPolygonVsPolyline, generateRealizedPath } from '../utils/collisionUtils';
+import React, { useRef, useEffect, useState } from 'react';
+import { MAP_CENTER, MAP_ZOOM } from '../utils/scaleConfig';
+import {
+  computeCumulativeDistances,
+  getPositionAlongPath,
+  getVehicleCorners,
+  checkPolygonVsPolyline,
+  generateRealizedPath,
+} from '../utils/collisionUtils';
 
 /**
- * SatelliteCanvas — Main rendering canvas for the satellite image-based route validator.
- * 
+ * SatelliteCanvas — Route validator backed by live Google Maps satellite imagery.
+ *
  * Rendering layers (bottom to top):
- * 1. Satellite image background (static PNG)
- * 2. Boundary polygons (outer = red, inner = blue)
- * 3. Train centerline path (green dashed)
- * 4. Tracing points & lines (when developer mode is active)
- * 5. Vehicle animation with swept path
- * 6. Collision markers
- * 7. HUD overlay (scale bar — drawn in screen space)
+ * 1. Google Maps satellite tile (rendered in a background <div>)
+ * 2. Canvas overlay — boundary polygons, train path, tracing dots (transparent bg)
+ * 3. Vehicle animation with swept path
+ * 4. Collision markers
+ * 5. HUD (scale bar, tracing mode indicator — drawn in screen space on canvas)
+ *
+ * Coordinate system:
+ * - Stored points: { lat, lng }
+ * - Each render frame: converted → canvas pixels using the map's OverlayView projection
+ * - Simulation distance: stored in meters, converted to pixels each frame
  */
+
+// ==========================================
+//   COORDINATE HELPERS
+// ==========================================
+
+/** Convert a stored {lat, lng} point to canvas container pixels. */
+function latLngToCanvas(point, projection) {
+  if (!projection || !point || !window.google) return { x: 0, y: 0 };
+  const latLng = new window.google.maps.LatLng(point.lat, point.lng);
+  const px = projection.fromLatLngToContainerPixel(latLng);
+  return px ? { x: px.x, y: px.y } : { x: 0, y: 0 };
+}
+
+/** Convert a canvas {x, y} click to a {lat, lng} point. */
+function canvasToLatLng(x, y, projection) {
+  if (!projection || !window.google) return null;
+  const pt = new window.google.maps.Point(x, y);
+  const latLng = projection.fromContainerPixelToLatLng(pt);
+  if (!latLng) return null;
+  return { lat: latLng.lat(), lng: latLng.lng() };
+}
+
+/** Compute pixels-per-meter at the current map zoom / center. */
+function getPixelsPerMeter(map) {
+  if (!map) return 4.5;
+  const zoom = map.getZoom();
+  const lat = map.getCenter().lat();
+  const metersPerPixel = (156543.03392 * Math.cos(lat * Math.PI / 180)) / Math.pow(2, zoom);
+  return 1 / metersPerPixel;
+}
+
+/** Haversine distance in meters between two {lat, lng} points. */
+function latLngDistanceMeters(p1, p2) {
+  const R = 6371000;
+  const dLat = (p2.lat - p1.lat) * Math.PI / 180;
+  const dLng = (p2.lng - p1.lng) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(p1.lat * Math.PI / 180) *
+    Math.cos(p2.lat * Math.PI / 180) *
+    Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Compute total path length in meters from an array of {lat, lng} points. */
+function computePathLengthMeters(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += latLngDistanceMeters(points[i - 1], points[i]);
+  }
+  return total;
+}
+
+// ==========================================
+//   PLAN STATIONS (HALTE)
+// ==========================================
+
+const PLAN_STATIONS = [
+  { id: 1, name: "Halte Terminal Intermoda Joyoboyo", lat: -7.298999, lng: 112.736389 },
+  { id: 2, name: "Halte Raya Darmo", lat: -7.287044, lng: 112.739376 },
+  { id: 3, name: "Halte Urip Sumoharjo", lat: -7.274010, lng: 112.741940 },
+  { id: 4, name: "Halte Basuki Rahmat", lat: -7.271783, lng: 112.741561 },
+  { id: 5, name: "Halte Embong Malang", lat: -7.258985, lng: 112.734124 },
+  { id: 6, name: "Halte Blauran", lat: -7.255178, lng: 112.734052 },
+  { id: 7, name: "Halte Praban", lat: -7.255178, lng: 112.734052 },
+  { id: 8, name: "Halte Tunjungan", lat: -7.259898, lng: 112.739251 },
+  { id: 9, name: "Halte Gubernur Suryo", lat: -7.263731, lng: 112.744015 },
+  { id: 10, name: "Halte Panglima Sudirman", lat: -7.269609, lng: 112.743886 }
+];
+
+// ==========================================
+//   COMPONENT
+// ==========================================
+
 const SatelliteCanvas = ({
   config,
   boundaries,
   trainPath,
   rulerPoints,
+  workZone = [],
   tracingMode,
   onAddPoint,
   onUndoPoint,
@@ -26,27 +110,27 @@ const SatelliteCanvas = ({
   resetTrigger,
   onSimulationUpdate,
   simulationSpeed,
-  pixelsPerMeter,
+  onPixelsPerMeterChange,
+  focusLocation,
 }) => {
   const canvasRef = useRef(null);
-  const imageRef = useRef(null);
-  const imageLoadedRef = useRef(false);
+  const mapDivRef = useRef(null);
+  const mapRef = useRef(null);
+  const projectionRef = useRef(null);
+  const geocoderRef = useRef(null);
+  const searchedLocationRef = useRef(null);
 
-  // Camera state (pan + zoom)
-  const cameraRef = useRef({
-    x: 0,
-    y: 0,
-    zoom: 1,
-    isDragging: false,
-    lastMouse: { x: 0, y: 0 },
-    dragDistance: 0,
-    clickPos: { x: 0, y: 0 },
-    button: 0,
-  });
+  // Location search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState('');
 
-  // Simulation state
+  // Total route length in meters (recomputed when trainPath changes)
+  const routeLengthMetersRef = useRef(0);
+
+  // Simulation state — distance is in meters (projection-independent)
   const stateRef = useRef({
-    distance: 0,
+    distanceMeters: 0,
     hasCollision: false,
     collisionCount: 0,
     progress: 0,
@@ -58,7 +142,7 @@ const SatelliteCanvas = ({
   // Reset simulation when trigger changes
   useEffect(() => {
     stateRef.current = {
-      distance: 0,
+      distanceMeters: 0,
       hasCollision: false,
       collisionCount: 0,
       progress: 0,
@@ -68,43 +152,100 @@ const SatelliteCanvas = ({
     };
   }, [resetTrigger]);
 
-  const routeDataRef = useRef(null);
-
-  // Recompute route data when trainPath or config changes
+  // Recompute route length in meters when path changes
   useEffect(() => {
     if (trainPath.length > 1) {
-      // 1. Generate the physically realizable path (clamped by maxSteeringAngle)
-      const realizedPath = generateRealizedPath(trainPath, config.wheelbase, config.maxSteeringAngle, pixelsPerMeter);
-      
-      // 2. Compute cumulative distances for the realized path
-      const cumulDists = computeCumulativeDistances(realizedPath);
-      
-      routeDataRef.current = { 
-        originalPath: trainPath,
-        path: realizedPath, 
-        cumulDists, 
-        totalLength: cumulDists[cumulDists.length - 1] 
-      };
+      routeLengthMetersRef.current = computePathLengthMeters(trainPath);
     } else {
-      routeDataRef.current = null;
+      routeLengthMetersRef.current = 0;
     }
-  }, [trainPath, config.wheelbase, config.maxSteeringAngle, pixelsPerMeter]);
-
-  // Load satellite image once on mount
-  useEffect(() => {
-    const img = new Image();
-    img.onload = () => {
-      imageRef.current = img;
-      imageLoadedRef.current = true;
-    };
-    img.onerror = () => {
-      console.error(`Failed to load satellite image: ${MAP_IMAGE_PATH}`);
-    };
-    img.src = MAP_IMAGE_PATH;
-  }, []);
+  }, [trainPath]);
 
   // ==========================================
-  //   MAIN RENDER LOOP + EVENT HANDLERS
+  //   GOOGLE MAPS INITIALIZATION
+  // ==========================================
+  useEffect(() => {
+    const initMap = () => {
+      if (!mapDivRef.current || !window.google || !window.google.maps) return;
+
+      const map = new window.google.maps.Map(mapDivRef.current, {
+        center: { lat: MAP_CENTER.lat, lng: MAP_CENTER.lng },
+        zoom: MAP_ZOOM,
+        mapTypeId: 'satellite',
+        tilt: 0,
+        rotateControl: false,
+        fullscreenControl: false,
+        streetViewControl: false,
+        mapTypeControl: true,
+        mapTypeControlOptions: {
+          style: window.google.maps.MapTypeControlStyle.DROPDOWN_MENU,
+          position: window.google.maps.ControlPosition.TOP_RIGHT,
+          mapTypeIds: ['satellite', 'hybrid', 'roadmap'],
+        },
+        zoomControlOptions: {
+          position: window.google.maps.ControlPosition.RIGHT_CENTER,
+        },
+        gestureHandling: 'greedy',
+        restriction: {
+          latLngBounds: {
+            north: -7.15,
+            south: -7.40,
+            east: 112.85,
+            west: 112.55,
+          },
+          strictBounds: true,
+        },
+      });
+      mapRef.current = map;
+
+      // Create an OverlayView to access the map's projection for coordinate conversion
+      const OverlayView = window.google.maps.OverlayView;
+      const overlay = new OverlayView();
+      overlay.onAdd = function () { };
+      overlay.draw = function () {
+        projectionRef.current = this.getProjection();
+      };
+      overlay.onRemove = function () { };
+      overlay.setMap(map);
+
+      // Initialize Geocoder for location search
+      geocoderRef.current = new window.google.maps.Geocoder();
+
+      // Notify parent whenever zoom changes (tilesloaded fires after the first full render)
+      const notifyPpm = () => {
+        if (onPixelsPerMeterChange) onPixelsPerMeterChange(getPixelsPerMeter(map));
+      };
+      map.addListener('tilesloaded', notifyPpm);
+      map.addListener('zoom_changed', notifyPpm);
+    };
+
+    if (window.google && window.google.maps) {
+      initMap();
+    } else {
+      // Poll until the async Maps script finishes loading
+      const id = setInterval(() => {
+        if (window.google && window.google.maps) {
+          clearInterval(id);
+          initMap();
+        }
+      }, 100);
+      return () => clearInterval(id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Handle focusLocation changes to pan/zoom the map
+  useEffect(() => {
+    if (focusLocation && mapRef.current) {
+      mapRef.current.setCenter({ lat: focusLocation.lat, lng: focusLocation.lng });
+      if (focusLocation.zoom) {
+        mapRef.current.setZoom(focusLocation.zoom);
+      }
+    }
+  }, [focusLocation]);
+
+  // ==========================================
+  //   MAIN CANVAS RENDER LOOP
   // ==========================================
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -112,7 +253,6 @@ const SatelliteCanvas = ({
     const ctx = canvas.getContext('2d');
     let animationFrameId;
 
-    // --- Resize handler ---
     const resizeCanvas = () => {
       canvas.width = canvas.parentElement.clientWidth;
       canvas.height = canvas.parentElement.clientHeight;
@@ -120,97 +260,53 @@ const SatelliteCanvas = ({
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
 
-    // ==========================================
-    //   MOUSE / INTERACTION HANDLERS
-    // ==========================================
+    // ---- Click / tracing handlers (only active when canvas has pointer-events) ----
     const handlePointerDown = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-
-      cameraRef.current.isDragging = true;
-      cameraRef.current.lastMouse = { x: e.clientX, y: e.clientY };
-      cameraRef.current.dragDistance = 0;
-      cameraRef.current.clickPos = { x: mx, y: my };
-      cameraRef.current.button = e.button;
-
-      if (tracingMode === 'off') {
-        canvas.style.cursor = 'grabbing';
-      }
+      if (tracingMode === 'off') return;
+      canvas._dragDist = 0;
+      canvas._lastMouse = { x: e.clientX, y: e.clientY };
+      canvas._button = e.button;
     };
 
     const handlePointerMove = (e) => {
-      if (!cameraRef.current.isDragging) return;
-
-      // In tracing mode, don't pan — only track drag distance for click detection
-      if (tracingMode !== 'off') {
-        const dx = e.clientX - cameraRef.current.lastMouse.x;
-        const dy = e.clientY - cameraRef.current.lastMouse.y;
-        cameraRef.current.dragDistance += Math.abs(dx) + Math.abs(dy);
-        cameraRef.current.lastMouse = { x: e.clientX, y: e.clientY };
-        return;
-      }
-
-      const dx = e.clientX - cameraRef.current.lastMouse.x;
-      const dy = e.clientY - cameraRef.current.lastMouse.y;
-      cameraRef.current.x += dx;
-      cameraRef.current.y += dy;
-      cameraRef.current.lastMouse = { x: e.clientX, y: e.clientY };
-      cameraRef.current.dragDistance += Math.abs(dx) + Math.abs(dy);
+      if (tracingMode === 'off' || !canvas._lastMouse) return;
+      const dx = e.clientX - canvas._lastMouse.x;
+      const dy = e.clientY - canvas._lastMouse.y;
+      canvas._dragDist = (canvas._dragDist || 0) + Math.abs(dx) + Math.abs(dy);
+      canvas._lastMouse = { x: e.clientX, y: e.clientY };
     };
 
     const handlePointerUp = (e) => {
-      const wasDrag = cameraRef.current.dragDistance > 5;
-      cameraRef.current.isDragging = false;
+      if (tracingMode === 'off') return;
+      
+      // Only process pointerup if a pointerdown was registered on the canvas
+      if (canvas._button == null) return;
 
-      if (tracingMode === 'off') {
-        canvas.style.cursor = 'grab';
-      }
+      const wasDrag = (canvas._dragDist || 0) > 5;
+      const btn = canvas._button;
+      
+      // Reset state for next interaction
+      canvas._button = null;
+      canvas._lastMouse = null;
+      canvas._dragDist = 0;
 
-      // If it was a click (not drag) and we're in tracing mode
-      if (!wasDrag && tracingMode !== 'off') {
-        if (cameraRef.current.button === 2) {
-          // Right click -> Undo
+      if (!wasDrag) {
+        if (btn === 2) {
+          // Right-click → undo
           if (onUndoPoint) onUndoPoint();
-        } else if (cameraRef.current.button === 0 && onAddPoint) {
-          // Left click -> Add point
-          const pos = cameraRef.current.clickPos;
-          const cam = cameraRef.current;
-
-          // Convert screen coordinates to image-space coordinates (undo camera transform)
-          const imageX = (pos.x - cam.x) / cam.zoom;
-          const imageY = (pos.y - cam.y) / cam.zoom;
-
-          onAddPoint({ x: imageX, y: imageY }, tracingMode);
+        } else if (btn === 0 && onAddPoint && projectionRef.current) {
+          // Left-click → add point
+          const rect = canvas.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+          const latLng = canvasToLatLng(x, y, projectionRef.current);
+          if (latLng) onAddPoint(latLng, tracingMode);
         }
       }
     };
 
-    const handleWheel = (e) => {
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
+    const handleContextMenu = (e) => e.preventDefault();
 
-      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-      const oldZoom = cameraRef.current.zoom;
-      const newZoom = Math.max(0.1, Math.min(20, oldZoom * zoomFactor));
-
-      // Zoom toward mouse position
-      cameraRef.current.x = mx - (mx - cameraRef.current.x) * (newZoom / oldZoom);
-      cameraRef.current.y = my - (my - cameraRef.current.y) * (newZoom / oldZoom);
-      cameraRef.current.zoom = newZoom;
-    };
-
-    // Set initial cursor based on mode
-    canvas.style.cursor = tracingMode !== 'off' ? 'crosshair' : 'grab';
-
-    // Prevent context menu on right click in canvas
-    const handleContextMenu = (e) => {
-      e.preventDefault();
-    };
-
-    // Keyboard undo (Ctrl+Z)
     const handleKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         if (tracingMode !== 'off' && onUndoPoint) {
@@ -225,219 +321,219 @@ const SatelliteCanvas = ({
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
     window.addEventListener('keydown', handleKeyDown);
-    canvas.addEventListener('wheel', handleWheel, { passive: false });
 
-    // ==========================================
-    //   RENDER FUNCTION
-    // ==========================================
+    // ---- Render ----
     const render = () => {
       const cw = canvas.width;
       const ch = canvas.height;
-      const cam = cameraRef.current;
-      const zoom = cam.zoom;
-      
-      const metersToPixels = (m) => m * pixelsPerMeter;
 
-      // ---- CLEAR ----
       ctx.clearRect(0, 0, cw, ch);
 
-      // ---- CAMERA TRANSFORM ----
-      ctx.save();
-      ctx.translate(cam.x, cam.y);
-      ctx.scale(zoom, zoom);
+      const projection = projectionRef.current;
+      const map = mapRef.current;
 
-      // ---- LAYER 1: SATELLITE IMAGE ----
-      if (imageLoadedRef.current && imageRef.current) {
-        ctx.drawImage(imageRef.current, 0, 0);
-      } else {
-        // Placeholder while image loads
-        ctx.fillStyle = '#1e293b';
-        ctx.fillRect(0, 0, 1600, 800);
-        ctx.fillStyle = '#94a3b8';
-        ctx.font = '20px Inter, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('Memuat citra satelit...', 800, 400);
+      // Wait for projection to be ready
+      if (!projection || !map) {
+        animationFrameId = requestAnimationFrame(render);
+        return;
       }
 
-      // ---- LAYER 2: BOUNDARY POLYGONS ----
-      drawBoundaryPolyline(ctx, boundaries.outer, 'rgba(239, 68, 68, 0.8)', 2.5 / zoom, false);
-      drawBoundaryPolyline(ctx, boundaries.inner, 'rgba(59, 130, 246, 0.8)', 2.5 / zoom, false);
+      const pixelsPerMeter = getPixelsPerMeter(map);
 
-      // ---- LAYER 3: TRAIN CENTERLINE PATH ----
-      drawBoundaryPolyline(ctx, trainPath, 'rgba(34, 197, 94, 0.8)', 2 / zoom, true);
+      // ---- Convert lat/lng paths → canvas pixels ----
+      const outerPx = boundaries.outer.map(p => latLngToCanvas(p, projection));
+      const innerPx = boundaries.inner.map(p => latLngToCanvas(p, projection));
+      const pathPx = trainPath.map(p => latLngToCanvas(p, projection));
+      const rulerPx = rulerPoints.map(p => latLngToCanvas(p, projection));
 
-      // ---- LAYER 4: TRACING POINTS (dots on all traced data) ----
-      drawTracingPoints(ctx, boundaries.outer, '#ef4444', 5 / zoom);
-      drawTracingPoints(ctx, boundaries.inner, '#3b82f6', 5 / zoom);
-      drawTracingPoints(ctx, trainPath, '#22c55e', 5 / zoom);
-      
-      // ---- LAYER 4.2: REALIZED PATH (DASHED) ----
-      if (routeDataRef.current && routeDataRef.current.path.length > 1) {
-        drawBoundaryPolyline(ctx, routeDataRef.current.path, 'rgba(255, 255, 255, 0.8)', 2 / zoom, true);
+      // ---- LAYER 2: BOUNDARY POLYLINES ----
+      drawBoundaryPolyline(ctx, outerPx, 'rgba(239, 68, 68, 0.85)', 2.5);
+      drawBoundaryPolyline(ctx, innerPx, 'rgba(59, 130, 246, 0.85)', 2.5);
+      drawBoundaryPolyline(ctx, pathPx, 'rgba(34, 197, 94, 0.85)', 2, true);
+
+      // ---- LAYER 3: TRACING POINTS ----
+      drawTracingPoints(ctx, outerPx, '#ef4444', 5);
+      drawTracingPoints(ctx, innerPx, '#3b82f6', 5);
+      drawTracingPoints(ctx, pathPx, '#22c55e', 5);
+
+      // ---- LAYER 4: REALIZED PATH (physically smoothed) ----
+      let realizedPathPx = pathPx;
+      if (pathPx.length > 1) {
+        realizedPathPx = generateRealizedPath(
+          pathPx,
+          config.wheelbase,
+          config.maxSteeringAngle,
+          pixelsPerMeter,
+        );
+        drawBoundaryPolyline(ctx, realizedPathPx, 'rgba(255, 255, 255, 0.75)', 1.5, true);
       }
-      
-      // ---- LAYER 4.5: RULER (MEASURING TOOL) ----
-      if (rulerPoints && rulerPoints.length > 0) {
-        drawTracingPoints(ctx, rulerPoints, '#a855f7', 6 / zoom);
-        if (rulerPoints.length === 2) {
+
+      // ---- LAYER 4.5: RULER ----
+      if (rulerPx && rulerPx.length > 0) {
+        drawTracingPoints(ctx, rulerPx, '#a855f7', 6);
+        if (rulerPx.length === 2) {
           ctx.beginPath();
           ctx.strokeStyle = '#a855f7';
-          ctx.lineWidth = 3 / zoom;
-          ctx.moveTo(rulerPoints[0].x, rulerPoints[0].y);
-          ctx.lineTo(rulerPoints[1].x, rulerPoints[1].y);
+          ctx.lineWidth = 2.5;
+          ctx.moveTo(rulerPx[0].x, rulerPx[0].y);
+          ctx.lineTo(rulerPx[1].x, rulerPx[1].y);
           ctx.stroke();
-          
-          // Calculate and draw distance
-          const dx = rulerPoints[1].x - rulerPoints[0].x;
-          const dy = rulerPoints[1].y - rulerPoints[0].y;
-          const pxDist = Math.sqrt(dx*dx + dy*dy);
-          const mDist = pxDist / pixelsPerMeter;
-          
-          const mx = (rulerPoints[0].x + rulerPoints[1].x) / 2;
-          const my = (rulerPoints[0].y + rulerPoints[1].y) / 2;
-          
-          ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-          const text = `${mDist.toFixed(2)} Meter`;
-          ctx.font = `${14/zoom}px Inter`;
-          const metrics = ctx.measureText(text);
-          ctx.fillRect(mx - metrics.width/2 - 5/zoom, my - 10/zoom - 14/zoom, metrics.width + 10/zoom, 20/zoom);
-          
-          ctx.fillStyle = '#fff';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'bottom';
-          ctx.fillText(text, mx, my - 8/zoom);
+
+          // Compute real-world distance using lat/lng
+          if (rulerPoints.length === 2) {
+            const mDist = latLngDistanceMeters(rulerPoints[0], rulerPoints[1]);
+            const mx = (rulerPx[0].x + rulerPx[1].x) / 2;
+            const my = (rulerPx[0].y + rulerPx[1].y) / 2;
+            const text = `${mDist.toFixed(2)} m`;
+            ctx.font = '14px Inter, sans-serif';
+            const tw = ctx.measureText(text).width;
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+            ctx.fillRect(mx - tw / 2 - 6, my - 24, tw + 12, 22);
+            ctx.fillStyle = '#fff';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(text, mx, my - 5);
+          }
         }
       }
 
       // ---- LAYER 5: VEHICLE SIMULATION ----
-      if (routeDataRef.current && trainPath.length > 1) {
-        const routeData = routeDataRef.current;
-        const { carriages, length, width, wheelbase } = config;
-        const L = metersToPixels(length);
-        const W = metersToPixels(width);
-        const WB = metersToPixels(wheelbase);
-        const gap = metersToPixels(1); // 1m gap between carriages
+      if (pathPx.length > 1 && realizedPathPx.length > 1) {
+        // Build pixel-space cumulative distances for the realized path
+        const cumulDistsPx = computeCumulativeDistances(realizedPathPx);
+        const totalLengthPx = cumulDistsPx[cumulDistsPx.length - 1] || 0;
 
-        // Advance simulation
+        const { carriages, length, width, wheelbase } = config;
+        const L = length * pixelsPerMeter;
+        const W = width * pixelsPerMeter;
+        const WB = wheelbase * pixelsPerMeter;
+        const gap = 1 * pixelsPerMeter; // 1 m gap
+
+        // Advance simulation (distance stored in meters)
         if (isPlaying && !stateRef.current.finished) {
-          const speedMps = simulationSpeed * (1000 / 3600); // km/h to m/s
-          const pxPerFrame = metersToPixels(speedMps) / 60; // assume 60fps
-          stateRef.current.distance += pxPerFrame;
+          const speedMps = simulationSpeed * (1000 / 3600);
+          stateRef.current.distanceMeters += speedMps / 60; // 60fps assumed
         }
 
-        const d = stateRef.current.distance;
+        // Convert to pixels for positioning
+        const d = stateRef.current.distanceMeters * pixelsPerMeter;
         const totalTrainLength = carriages * L + (carriages - 1) * gap;
 
-        // Check if train has finished the route
-        if (d - totalTrainLength > routeData.totalLength) {
+        if (d - totalTrainLength > totalLengthPx) {
           stateRef.current.finished = true;
         }
 
-        // Calculate progress
-        stateRef.current.progress = Math.min(1, d / (routeData.totalLength + totalTrainLength));
+        stateRef.current.progress = Math.min(1, d / (totalLengthPx + totalTrainLength));
 
         let hasCollision = false;
         let collisionCount = 0;
         const carriageStates = [];
 
         for (let i = 0; i < carriages; i++) {
-          // The distance of the front tip of the body of this carriage
           const frontBodyDist = d - i * (L + gap);
-          
-          // The ART uses Multi-Axle Steering (Virtual Track). 
-          // All axles perfectly follow the trace.
           const overhang = (L - WB) / 2;
           const frontAxleDist = frontBodyDist - overhang;
           const rearAxleDist = frontAxleDist - WB;
 
-          const pf = getPositionAlongPath(routeData.path, routeData.cumulDists, frontAxleDist);
-          const pr = getPositionAlongPath(routeData.path, routeData.cumulDists, rearAxleDist);
-          
-          // The rigid body angle is defined by the line connecting its two axles
+          const pf = getPositionAlongPath(realizedPathPx, cumulDistsPx, frontAxleDist);
+          const pr = getPositionAlongPath(realizedPathPx, cumulDistsPx, rearAxleDist);
+
           const angle = Math.atan2(pf.y - pr.y, pf.x - pr.x);
-          
-          // Center of the body is the midpoint between the axles
           const cx = (pf.x + pr.x) / 2;
           const cy = (pf.y + pr.y) / 2;
           const pos = { x: cx, y: cy, angle };
-          
-          // Get corners
+
           const corners = getVehicleCorners(pos.x, pos.y, pos.angle, L / 2, W / 2);
-          
           let carriageColliding = false;
 
-          // Check collisions with outer boundary
-          if (boundaries.outer.length > 1) {
-            if (checkPolygonVsPolyline(corners, boundaries.outer)) {
-               carriageColliding = true;
-               collisionCount++;
-            }
+          if (outerPx.length > 1 && checkPolygonVsPolyline(corners, outerPx)) {
+            carriageColliding = true;
+            collisionCount++;
           }
-          
-          // Check collisions with inner boundary
-          if (boundaries.inner.length > 1) {
-            if (checkPolygonVsPolyline(corners, boundaries.inner)) {
-               carriageColliding = true;
-               collisionCount++;
-            }
+          if (innerPx.length > 1 && checkPolygonVsPolyline(corners, innerPx)) {
+            carriageColliding = true;
+            collisionCount++;
           }
 
           if (carriageColliding) hasCollision = true;
-
           carriageStates.push({ pos, L, W, WB, isColliding: carriageColliding, corners });
 
-          // Record swept path for lead carriage (front corners) and rear carriage (rear corners)
-          if (isPlaying && !stateRef.current.finished) {
-            if (i === 0) {
-               stateRef.current.sweptTrailOuter.push({x: corners[0].x, y: corners[0].y}); // Front-left
-               stateRef.current.sweptTrailInner.push({x: corners[1].x, y: corners[1].y}); // Front-right
-            }
+          // Record swept path (front-left & front-right corners of lead carriage)
+          if (isPlaying && !stateRef.current.finished && i === 0) {
+            stateRef.current.sweptTrailOuter.push({ x: corners[0].x, y: corners[0].y });
+            stateRef.current.sweptTrailInner.push({ x: corners[1].x, y: corners[1].y });
           }
         }
 
-        // Draw Swept Path Trails
-        drawTrace(ctx, stateRef.current.sweptTrailOuter, 'rgba(251, 191, 36, 0.4)', 2 / zoom);
-        drawTrace(ctx, stateRef.current.sweptTrailInner, 'rgba(251, 191, 36, 0.4)', 2 / zoom);
+        // Draw swept trails
+        drawTrace(ctx, stateRef.current.sweptTrailOuter, 'rgba(251, 191, 36, 0.45)', 2);
+        drawTrace(ctx, stateRef.current.sweptTrailInner, 'rgba(251, 191, 36, 0.45)', 2);
 
-        // Draw carriages
+        // Draw carriages + connectors
         for (let i = 0; i < carriages; i++) {
           const st = carriageStates[i];
           drawCarriage(ctx, st.pos, st.L, st.W, st.WB, i === 0, st.isColliding);
-          
-          // Draw connector to NEXT carriage (if not last)
           if (i < carriages - 1) {
-            const nextSt = carriageStates[i + 1];
-            drawConnector(ctx, st.pos, nextSt.pos, st.L);
+            drawConnector(ctx, st.pos, carriageStates[i + 1].pos, st.L);
           }
         }
 
-        // Update state logic
-        if (isPlaying || stateRef.current.distance > 0) {
-           if (hasCollision && !stateRef.current.hasCollision) {
-               stateRef.current.hasCollision = true;
-           }
-           if (hasCollision) {
-               stateRef.current.collisionCount += collisionCount;
-           }
-           
-           if (onSimulationUpdate) {
-             onSimulationUpdate({
-               progress: stateRef.current.progress,
-               hasCollision: stateRef.current.hasCollision,
-               collisionCount: stateRef.current.collisionCount,
-               finished: stateRef.current.finished,
-               distance: stateRef.current.distance / pixelsPerMeter,
-             });
-           }
+        // Update persistent collision state
+        if (hasCollision) {
+          stateRef.current.hasCollision = true;
+          stateRef.current.collisionCount += collisionCount;
+        }
+
+        if (onSimulationUpdate) {
+          onSimulationUpdate({
+            progress: stateRef.current.progress,
+            hasCollision: stateRef.current.hasCollision,
+            collisionCount: stateRef.current.collisionCount,
+            finished: stateRef.current.finished,
+            distance: stateRef.current.distanceMeters,
+          });
         }
       }
 
-      // ---- END CAMERA TRANSFORM ----
-      ctx.restore();
+
+      // ---- LAYER 6.5: PLAN STATIONS ----
+      PLAN_STATIONS.forEach(station => {
+        const markerPx = latLngToCanvas(station, projection);
+        // Only draw if within reasonable distance of screen (optimization)
+        if (markerPx.x > -100 && markerPx.x < cw + 100 && markerPx.y > -100 && markerPx.y < ch + 100) {
+          // Inner circle (number bg)
+          ctx.beginPath();
+          ctx.arc(markerPx.x, markerPx.y, 12, 0, Math.PI * 2);
+          ctx.fillStyle = '#f8fafc';
+          ctx.fill();
+          
+          // Outer border
+          ctx.lineWidth = 2.5;
+          ctx.strokeStyle = '#3b82f6';
+          ctx.stroke();
+
+          // Text (number)
+          ctx.font = '700 12px Inter, sans-serif';
+          ctx.fillStyle = '#0f172a';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(station.id.toString(), markerPx.x, markerPx.y + 1);
+
+          // Station Name Label
+          ctx.font = '600 11px Inter, sans-serif';
+          const tw = ctx.measureText(station.name).width;
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+          ctx.beginPath();
+          ctx.roundRect(markerPx.x - tw / 2 - 6, markerPx.y + 16, tw + 12, 18, 4);
+          ctx.fill();
+          
+          ctx.fillStyle = '#f8fafc';
+          ctx.fillText(station.name, markerPx.x, markerPx.y + 25);
+        }
+      });
 
       // ---- LAYER 7: HUD (screen space) ----
-      drawScaleBar(ctx, cw, ch, pixelsPerMeter, zoom);
+      drawScaleBar(ctx, cw, ch, pixelsPerMeter);
       drawTracingModeIndicator(ctx, cw, tracingMode);
 
       animationFrameId = requestAnimationFrame(render);
@@ -452,40 +548,235 @@ const SatelliteCanvas = ({
       window.removeEventListener('keydown', handleKeyDown);
       canvas.removeEventListener('pointerdown', handlePointerDown);
       canvas.removeEventListener('contextmenu', handleContextMenu);
-      canvas.removeEventListener('wheel', handleWheel);
       cancelAnimationFrame(animationFrameId);
     };
-  }, [config, boundaries, trainPath, rulerPoints, tracingMode, isPlaying, resetTrigger, onAddPoint, onUndoPoint, onSimulationUpdate, simulationSpeed, pixelsPerMeter]);
+  }, [
+    config, boundaries, trainPath, rulerPoints, workZone, tracingMode,
+    isPlaying, resetTrigger, onAddPoint, onUndoPoint,
+    onSimulationUpdate, simulationSpeed,
+  ]);
 
-  return <canvas ref={canvasRef} />;
+
+  // ---- Location search handler ----
+  const handleSearch = (e, overrideQuery) => {
+    if (e) e.preventDefault();
+    const q = (overrideQuery || searchQuery).trim();
+    if (!q || !geocoderRef.current || !mapRef.current) return;
+
+    setSearchLoading(true);
+    setSearchError('');
+
+    // Bias results to Surabaya
+    geocoderRef.current.geocode(
+      { address: q + ', Surabaya, Jawa Timur, Indonesia' },
+      (results, status) => {
+        setSearchLoading(false);
+        if (status === 'OK' && results[0]) {
+          const loc = results[0].geometry;
+          searchedLocationRef.current = { lat: loc.location.lat(), lng: loc.location.lng(), label: q };
+
+          if (loc.viewport) {
+            mapRef.current.fitBounds(loc.viewport);
+          } else {
+            mapRef.current.setCenter(loc.location);
+            mapRef.current.setZoom(18);
+          }
+        } else {
+          searchedLocationRef.current = null;
+          setSearchError('Lokasi tidak ditemukan');
+          setTimeout(() => setSearchError(''), 3000);
+        }
+      },
+    );
+  };
+
+  // Quick-access preset locations (common Surabaya junctions)
+  const QUICK_SPOTS = [
+    { label: 'Bundaran Waru', query: 'Bundaran Waru' },
+    { label: 'Joyoboyo', query: 'Terminal Joyoboyo' },
+    { label: 'Wonokromo', query: 'Bundaran Wonokromo' },
+    { label: 'BG Junction', query: 'BG Junction' },
+    { label: 'Mayjen Sungkono', query: 'Jl Mayjen Sungkono' },
+    { label: 'Ahmad Yani', query: 'Jl Ahmad Yani Surabaya' },
+    { label: 'Gubeng', query: 'Bundaran Dolog Gubeng' },
+  ];
+
+  // Canvas pointer-events: only intercept when in tracing mode.
+  // In normal mode, let events pass through to Google Maps for native pan/zoom.
+  const canvasPointerEvents = tracingMode !== 'off' ? 'all' : 'none';
+  const canvasCursor = tracingMode !== 'off' ? 'crosshair' : 'default';
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {/* Google Maps background */}
+      <div
+        ref={mapDivRef}
+        style={{ position: 'absolute', inset: 0 }}
+      />
+
+      {/* Transparent canvas overlay for all drawings */}
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: canvasPointerEvents,
+          cursor: canvasCursor,
+        }}
+      />
+
+      {/* ---- FLOATING LOCATION SEARCH BAR ---- */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 24,
+          left: 24,
+          zIndex: 20,
+          pointerEvents: 'all',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-start',
+          gap: 6,
+          width: 'clamp(280px, 35vw, 360px)',
+        }}
+      >
+        {/* Search input row */}
+        <form
+          onSubmit={handleSearch}
+          style={{
+            display: 'flex',
+            width: '100%',
+            background: 'rgba(15, 23, 42, 0.82)',
+            backdropFilter: 'blur(12px)',
+            borderRadius: 12,
+            border: '1px solid rgba(148, 163, 184, 0.2)',
+            boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+            overflow: 'hidden',
+          }}
+        >
+          <span style={{
+            padding: '10px 10px 10px 14px',
+            fontSize: 16,
+            userSelect: 'none',
+            color: '#64748b',
+          }}>
+            🔍
+          </span>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Cari lokasi di Surabaya…"
+            style={{
+              flex: 1,
+              background: 'transparent',
+              border: 'none',
+              outline: 'none',
+              color: '#f1f5f9',
+              fontSize: 14,
+              fontFamily: 'Inter, sans-serif',
+              padding: '10px 6px',
+            }}
+          />
+          <button
+            type="submit"
+            disabled={searchLoading}
+            style={{
+              background: searchLoading ? 'rgba(59,130,246,0.4)' : 'rgba(59, 130, 246, 0.9)',
+              border: 'none',
+              color: '#fff',
+              padding: '0 18px',
+              cursor: searchLoading ? 'wait' : 'pointer',
+              fontSize: 13,
+              fontWeight: 600,
+              fontFamily: 'Inter, sans-serif',
+              transition: 'background 0.2s',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {searchLoading ? '...' : 'Cari'}
+          </button>
+        </form>
+
+        {/* Error message */}
+        {searchError && (
+          <div style={{
+            background: 'rgba(239, 68, 68, 0.9)',
+            color: '#fff',
+            padding: '6px 14px',
+            borderRadius: 8,
+            fontSize: 13,
+            fontFamily: 'Inter, sans-serif',
+          }}>
+            {searchError}
+          </div>
+        )}
+
+        {/* Quick-access chips */}
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 5,
+          justifyContent: 'flex-start',
+        }}>
+          {QUICK_SPOTS.map(spot => (
+            <button
+              key={spot.label}
+              type="button"
+              onClick={() => {
+                setSearchQuery(spot.query);
+                handleSearch(null, spot.query);
+              }}
+              style={{
+                background: 'rgba(15, 23, 42, 0.78)',
+                backdropFilter: 'blur(8px)',
+                border: '1px solid rgba(148, 163, 184, 0.25)',
+                borderRadius: 20,
+                color: '#cbd5e1',
+                fontSize: 12,
+                fontFamily: 'Inter, sans-serif',
+                padding: '4px 12px',
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+                whiteSpace: 'nowrap',
+              }}
+              onMouseEnter={e => {
+                e.target.style.background = 'rgba(59, 130, 246, 0.7)';
+                e.target.style.color = '#fff';
+              }}
+              onMouseLeave={e => {
+                e.target.style.background = 'rgba(15, 23, 42, 0.78)';
+                e.target.style.color = '#cbd5e1';
+              }}
+            >
+              {spot.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 };
+
 
 // ==========================================
 //   DRAWING HELPERS
 // ==========================================
 
 /**
- * Draw a polyline from an array of {x, y} points.
- * Used for boundaries and the train path.
+ * Draw a polyline from an array of {x, y} canvas-pixel points.
  */
 function drawBoundaryPolyline(ctx, points, color, lineWidth, dashed = false) {
   if (!points || points.length < 2) return;
-
   ctx.save();
   ctx.beginPath();
   ctx.strokeStyle = color;
   ctx.lineWidth = lineWidth;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-
-  if (dashed) {
-    ctx.setLineDash([lineWidth * 4, lineWidth * 4]);
-  }
-
+  if (dashed) ctx.setLineDash([lineWidth * 4, lineWidth * 4]);
   ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) {
-    ctx.lineTo(points[i].x, points[i].y);
-  }
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
   ctx.stroke();
   ctx.restore();
 }
@@ -495,15 +786,11 @@ function drawBoundaryPolyline(ctx, points, color, lineWidth, dashed = false) {
  */
 function drawTracingPoints(ctx, points, color, radius) {
   if (!points || points.length === 0) return;
-
   for (const pt of points) {
-    // Outer ring
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
     ctx.fillStyle = color;
     ctx.fill();
-
-    // Inner white dot
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, radius * 0.45, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
@@ -512,101 +799,7 @@ function drawTracingPoints(ctx, points, color, radius) {
 }
 
 /**
- * Draw a scale bar in screen space (bottom-right corner).
- */
-function drawScaleBar(ctx, cw, ch, pixelsPerMeter, zoom) {
-  const targetPx = 120;
-  const targetMeters = targetPx / (pixelsPerMeter * zoom);
-
-  const niceValues = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
-  let scaleMeters = niceValues[0];
-  for (const v of niceValues) {
-    if (v <= targetMeters) scaleMeters = v;
-    else break;
-  }
-
-  const scalePx = scaleMeters * pixelsPerMeter * zoom;
-  const x = cw - 40 - scalePx;
-  const y = ch - 40;
-
-  // Background
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
-  ctx.beginPath();
-  ctx.roundRect(x - 12, y - 24, scalePx + 24, 38, 8);
-  ctx.fill();
-
-  // Bar
-  ctx.strokeStyle = '#e2e8f0';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(x, y);
-  ctx.lineTo(x + scalePx, y);
-  ctx.stroke();
-
-  // End ticks
-  ctx.beginPath();
-  ctx.moveTo(x, y - 5);
-  ctx.lineTo(x, y + 5);
-  ctx.moveTo(x + scalePx, y - 5);
-  ctx.lineTo(x + scalePx, y + 5);
-  ctx.stroke();
-
-  // Label
-  ctx.fillStyle = '#e2e8f0';
-  ctx.font = 'bold 11px Inter, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'bottom';
-  ctx.fillText(`${scaleMeters} m`, x + scalePx / 2, y - 7);
-}
-
-/**
- * Draw a tracing mode indicator badge at the top-center of the canvas.
- */
-function drawTracingModeIndicator(ctx, cw, tracingMode) {
-  if (tracingMode === 'off') return;
-
-  const labels = {
-    outer: { text: '🔴 TRACING: Batas Luar', color: 'rgba(239, 68, 68, 0.9)' },
-    inner: { text: '🔵 TRACING: Batas Dalam', color: 'rgba(59, 130, 246, 0.9)' },
-    path:  { text: '🟢 TRACING: Path Kereta', color: 'rgba(34, 197, 94, 0.9)' },
-    ruler: { text: '📏 ALAT UKUR (Ruler)', color: 'rgba(168, 85, 247, 0.9)' },
-  };
-
-  const info = labels[tracingMode];
-  if (!info) return;
-
-  const text = info.text;
-  ctx.font = 'bold 14px Inter, sans-serif';
-  const metrics = ctx.measureText(text);
-  const padX = 20;
-  const padY = 10;
-  const w = metrics.width + padX * 2;
-  const h = 36;
-  const x = (cw - w) / 2;
-  const y = 16;
-
-  // Background pill
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, h, 18);
-  ctx.fill();
-
-  // Border
-  ctx.strokeStyle = info.color;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, h, 18);
-  ctx.stroke();
-
-  // Text
-  ctx.fillStyle = '#f8fafc';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, cw / 2, y + h / 2);
-}
-
-/**
- * Draw a trace line
+ * Draw a continuous trace line (for swept path).
  */
 function drawTrace(ctx, points, color, lineWidth) {
   if (!points || points.length < 2) return;
@@ -614,26 +807,23 @@ function drawTrace(ctx, points, color, lineWidth) {
   ctx.strokeStyle = color;
   ctx.lineWidth = lineWidth;
   ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) {
-    ctx.lineTo(points[i].x, points[i].y);
-  }
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
   ctx.stroke();
 }
 
 /**
- * Draw a train carriage
+ * Draw a train carriage rectangle with wheels and direction indicator.
  */
 function drawCarriage(ctx, pos, L, W, WB, isLead, hasCollision) {
   ctx.save();
   ctx.translate(pos.x, pos.y);
   ctx.rotate(pos.angle);
 
-  // Body
   const bodyColor = hasCollision
-    ? 'rgba(239, 68, 68, 0.9)'
+    ? 'rgba(239, 68, 68, 0.92)'
     : isLead
-      ? 'rgba(59, 130, 246, 0.9)'
-      : 'rgba(148, 163, 184, 0.9)';
+      ? 'rgba(59, 130, 246, 0.92)'
+      : 'rgba(148, 163, 184, 0.92)';
 
   ctx.fillStyle = bodyColor;
   ctx.strokeStyle = '#fff';
@@ -651,7 +841,7 @@ function drawCarriage(ctx, pos, L, W, WB, isLead, hasCollision) {
   ctx.fillRect(-WB / 2 - ww / 2, -W / 2 - 1, ww, wh);
   ctx.fillRect(-WB / 2 - ww / 2, W / 2 - wh + 1, ww, wh);
 
-  // Direction indicator (front)
+  // Direction indicator
   if (isLead) {
     ctx.fillStyle = '#facc15';
     ctx.beginPath();
@@ -666,10 +856,9 @@ function drawCarriage(ctx, pos, L, W, WB, isLead, hasCollision) {
 }
 
 /**
- * Draw connector between carriages
+ * Draw coupler between two carriages.
  */
 function drawConnector(ctx, currPos, nextPos, L) {
-  // Connector goes from rear of current to front of next
   const rPx = currPos.x - (L / 2) * Math.cos(currPos.angle);
   const rPy = currPos.y - (L / 2) * Math.sin(currPos.angle);
   const fCx = nextPos.x + (L / 2) * Math.cos(nextPos.angle);
@@ -682,11 +871,94 @@ function drawConnector(ctx, currPos, nextPos, L) {
   ctx.lineTo(fCx, fCy);
   ctx.stroke();
 
-  // Joint dot
   ctx.beginPath();
   ctx.fillStyle = '#ef4444';
   ctx.arc((rPx + fCx) / 2, (rPy + fCy) / 2, 2.5, 0, Math.PI * 2);
   ctx.fill();
+}
+
+/**
+ * Draw a scale bar in the bottom-right corner (screen space).
+ * pixelsPerMeter is computed dynamically from the current map zoom.
+ */
+function drawScaleBar(ctx, cw, ch, pixelsPerMeter) {
+  const targetPx = 120;
+  const targetMeters = targetPx / pixelsPerMeter;
+
+  const niceValues = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+  let scaleMeters = niceValues[0];
+  for (const v of niceValues) {
+    if (v <= targetMeters) scaleMeters = v;
+    else break;
+  }
+
+  const scalePx = scaleMeters * pixelsPerMeter;
+  const x = cw - 40 - scalePx;
+  const y = ch - 40;
+
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+  ctx.beginPath();
+  ctx.roundRect(x - 12, y - 24, scalePx + 24, 38, 8);
+  ctx.fill();
+
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + scalePx, y);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(x, y - 5); ctx.lineTo(x, y + 5);
+  ctx.moveTo(x + scalePx, y - 5); ctx.lineTo(x + scalePx, y + 5);
+  ctx.stroke();
+
+  const label = scaleMeters >= 1000 ? `${scaleMeters / 1000} km` : `${scaleMeters} m`;
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = 'bold 11px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(label, x + scalePx / 2, y - 7);
+}
+
+/**
+ * Draw a tracing-mode indicator badge at the top-center of the canvas.
+ */
+function drawTracingModeIndicator(ctx, cw, tracingMode) {
+  if (tracingMode === 'off') return;
+
+  const labels = {
+    outer: { text: '🔴 TRACING: Batas Luar', color: 'rgba(239, 68, 68, 0.9)' },
+    inner: { text: '🔵 TRACING: Batas Dalam', color: 'rgba(59, 130, 246, 0.9)' },
+    path: { text: '🟢 TRACING: Path Kereta', color: 'rgba(34, 197, 94, 0.9)' },
+    ruler: { text: '📏 ALAT UKUR (Ruler)', color: 'rgba(168, 85, 247, 0.9)' },
+  };
+
+  const info = labels[tracingMode];
+  if (!info) return;
+
+  ctx.font = 'bold 14px Inter, sans-serif';
+  const metrics = ctx.measureText(info.text);
+  const padX = 20, h = 36;
+  const w = metrics.width + padX * 2;
+  const x = (cw - w) / 2;
+  const y = 16;
+
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 18);
+  ctx.fill();
+
+  ctx.strokeStyle = info.color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 18);
+  ctx.stroke();
+
+  ctx.fillStyle = '#f8fafc';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(info.text, cw / 2, y + h / 2);
 }
 
 export default SatelliteCanvas;

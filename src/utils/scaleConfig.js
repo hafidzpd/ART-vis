@@ -1,50 +1,45 @@
 /**
- * Scale Configuration for ART-Vis Satellite Image Validator
- * 
- * Central location for the pixel-to-meter conversion ratio.
- * This value determines how vehicle dimensions (in meters) map to
- * pixel sizes on the satellite image.
- * 
- * HOW TO CALIBRATE:
- * 1. Use the Developer Mode tracing tool to measure a known distance 
- *    on the satellite image (e.g., a road segment of known length).
- * 2. Count the pixel distance between two points.
- * 3. PIXELS_PER_METER = pixel_distance / real_world_meters
- * 
- * Example: If a 100m road segment spans 450 pixels → PIXELS_PER_METER = 4.5
+ * Google Maps Configuration for ART-Vis
+ *
+ * pixelsPerMeter is no longer a static constant — it is computed dynamically
+ * from the Google Maps zoom level and latitude each render frame using:
+ *
+ *   metersPerPixel = (156543.03392 * cos(lat * π/180)) / 2^zoom
+ *   pixelsPerMeter = 1 / metersPerPixel
+ *
+ * This file provides the initial map center and zoom for Surabaya.
  */
 
 // =============================================
-//  PRIMARY SCALE CONSTANT
-// =============================================
-
-/** 
- * Conversion ratio: how many pixels in the satellite image represent 1 meter.
- * Adjust this value after calibrating with the tracing tool.
- */
-export const PIXELS_PER_METER = 4.5;
-
-// =============================================
-//  MAP IMAGE CONFIGURATION
-// =============================================
-
-/** Path to the satellite image in the public folder */
-export const MAP_IMAGE_PATH = '/map-belokan-bgjunction.png';
-
-// =============================================
-//  CONVERSION HELPERS
+//  MAP CENTER & ZOOM (Surabaya, East Java)
 // =============================================
 
 /**
- * Convert a real-world measurement in meters to pixel units on the map.
- * @param {number} meters - Distance in meters
- * @returns {number} Distance in pixels
+ * Initial center of the Google Map when the app loads.
+ * Coordinates for Kota Surabaya, Jawa Timur, Indonesia.
  */
-export const metersToPixels = (meters) => meters * PIXELS_PER_METER;
+export const MAP_CENTER = {
+  lat: -7.2575,
+  lng: 112.7521,
+};
 
 /**
- * Convert pixel distance on the map to real-world meters.
- * @param {number} pixels - Distance in pixels
- * @returns {number} Distance in meters
+ * Initial zoom level.
+ * 14 = city-level view; zoom in to street/junction level (17–19) for tracing.
  */
-export const pixelsToMeters = (pixels) => pixels / PIXELS_PER_METER;
+export const MAP_ZOOM = 14;
+
+// =============================================
+//  HELPERS (for non-Google-Maps contexts)
+// =============================================
+
+/**
+ * Compute pixelsPerMeter for a given Google Maps zoom level and latitude.
+ * @param {number} zoom - Google Maps zoom level
+ * @param {number} lat  - Latitude in degrees
+ * @returns {number} Pixels per meter at that zoom and latitude
+ */
+export const computePixelsPerMeter = (zoom, lat) => {
+  const metersPerPixel = (156543.03392 * Math.cos(lat * Math.PI / 180)) / Math.pow(2, zoom);
+  return 1 / metersPerPixel;
+};

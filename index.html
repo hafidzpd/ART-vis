@@ -4,8 +4,13 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ART-Vis | Validator Rute Geografis</title>
-    <meta name="description" content="Alat validasi rute geografis untuk Autonomous Rail Transit (ART). Menguji apakah spesifikasi kereta muat melewati rute jalan di peta OpenStreetMap." />
+    <title>ART-Vis | Validator Rute Surabaya</title>
+  <meta name="description" content="Alat validasi rute berbasis Google Maps untuk Autonomous Rail Transit (ART) di Kota Surabaya. Menguji apakah spesifikasi kereta muat melewati rute jalan." />
+  <script>
+    window.__googleMapsLoaded = false;
+    function initGoogleMaps() { window.__googleMapsLoaded = true; }
+  </script>
+  <script async src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBpJJxpRgjQFxyVOUEihn4fPzZp_yAcOSo&callback=initGoogleMaps"></script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Crosshair, Trash2, Undo2, Download, Upload, ChevronDown, ChevronRight, Map } from 'lucide-react';
+import { Trash2, Undo2, Download, Upload, ChevronDown, ChevronRight } from 'lucide-react';
 
 const Sidebar = ({
   config,
@@ -9,14 +9,13 @@ const Sidebar = ({
   tracingMode,
   setTracingMode,
   pixelsPerMeter,
-  setPixelsPerMeter,
   boundaries,
   trainPath,
   onUndoPoint,
   onClearAllPoints,
   onExportCoordinates,
   onImportCoordinates,
-  onLoadDefaultTrace,
+  onLoadPreset,
 }) => {
   const [devModeOpen, setDevModeOpen] = useState(true);
   const [exportText, setExportText] = useState('');
@@ -123,20 +122,18 @@ const Sidebar = ({
         </div>
       </div>
 
-      {/* Scale Calibration */}
+      {/* Scale Info (auto from Google Maps zoom) */}
       <div className="control-group">
-        <h3>Kalibrasi Skala Peta</h3>
+        <h3>Skala Peta (Otomatis)</h3>
         <div className="input-field">
           <label>
-            <span>Rasio (Piksel per Meter)</span>
+            <span>Resolusi saat ini</span>
             <span className="value">{pixelsPerMeter.toFixed(1)} px/m</span>
           </label>
-          <input
-            type="range"
-            min="1" max="15" step="0.1"
-            value={pixelsPerMeter}
-            onChange={(e) => setPixelsPerMeter(parseFloat(e.target.value))}
-          />
+          <p style={{ fontSize: '0.72rem', color: '#64748b', marginTop: 4 }}>
+            Skala dihitung otomatis dari zoom Google Maps.
+            Zoom in untuk presisi lebih tinggi saat tracing.
+          </p>
         </div>
       </div>
 
@@ -170,7 +167,8 @@ const Sidebar = ({
         {devModeOpen && (
           <div className="dev-mode-content">
             <p className="dev-mode-hint">
-              Klik gambar peta untuk menambah titik. Pilih mode di bawah:
+              Zoom in ke lokasi di Google Maps, lalu klik peta untuk menambah titik.
+              Pilih mode di bawah:
             </p>
 
             {/* Tracing mode toggles */}
@@ -247,21 +245,35 @@ const Sidebar = ({
               </button>
 
               <button
-                className="btn-trace-action"
-                onClick={onLoadDefaultTrace}
-                title="Muat trace default (BG Junction)"
-              >
-                <Map size={14} />
-                Default
-              </button>
-
-              <button
                 className="btn-trace-action danger"
                 onClick={onClearAllPoints}
                 title="Hapus semua titik"
               >
                 <Trash2 size={14} />
                 Reset
+              </button>
+            </div>
+
+            {/* Presets */}
+            <div className="trace-actions" style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <button
+                className="btn-trace-action"
+                onClick={() => onLoadPreset('full-route.json')}
+                title="Muat Rute Lengkap (Loop 10 Halte)"
+                style={{ width: '100%', justifyContent: 'center', background: 'rgba(34, 197, 94, 0.15)', borderColor: 'rgba(34, 197, 94, 0.3)', color: '#86efac' }}
+              >
+                <Upload size={14} />
+                Full Route (Loop 10 Halte)
+              </button>
+              
+              <button
+                className="btn-trace-action"
+                onClick={() => onLoadPreset('bg-junction.json')}
+                title="Muat rute contoh BG Junction (Jl. Blauran - Jl. Praban)"
+                style={{ width: '100%', justifyContent: 'center', background: 'rgba(59, 130, 246, 0.15)', borderColor: 'rgba(59, 130, 246, 0.3)', color: '#93c5fd' }}
+              >
+                <Upload size={14} />
+                Contoh: BG Junction
               </button>
             </div>
 
@@ -281,9 +293,9 @@ const Sidebar = ({
 
       <div className="control-group" style={{ marginTop: 'auto', opacity: 0.7 }}>
         <p style={{ fontSize: '0.75rem', color: '#94a3b8', lineHeight: 1.5 }}>
-          <strong>Cara Pakai:</strong> Gunakan Developer Mode untuk trace batas jalan
-          dan path kereta di atas gambar peta. Tekan ▶ untuk menjalankan simulasi.
-          Scroll untuk zoom, drag untuk geser peta.
+          <strong>Cara Pakai:</strong> Navigasi Google Maps ke lokasi yang diinginkan,
+          zoom in, lalu gunakan Developer Mode untuk trace batas jalan dan path kereta.
+          Tekan ▶ untuk menjalankan simulasi.
         </p>
       </div>
     </div>
